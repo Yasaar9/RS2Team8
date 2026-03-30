@@ -44,6 +44,7 @@ source ~/.bashrc
 cd ~/turtlebot3_wsx
 rm -rf build install log
 colcon build --symlink-install
+source ~/.bashrc
 
 ## Run Simulation
 
