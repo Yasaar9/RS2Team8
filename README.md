@@ -8,6 +8,8 @@ https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
 
 ## Dependicies
 
+TurtleBot3 e-Manual: https://emanual.robotis.com/docs/en/platform/turtlebot3/quick-start/
+
 sudo apt install ros-humble-gazebo-*
 sudo apt install ros-humble-cartographer
 sudo apt install ros-humble-cartographer-ros
@@ -60,3 +62,32 @@ ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 export TURTLEBOT3_MODEL=waffle_pi
 ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
+
+FOLDER STRUCTURE
+================================================================================
+
+~/git/RS2Team8/                    ← Git repository (commit/push from here)
+├── README.md                      ← Setup instructions for teammates
+├── .gitignore                     ← Excludes build/, install/, log/
+└── r2_dTour/                      ← All packages (dependencies + your code)
+    ├── DynamixelSDK/              ← Real files (cloned from ROBOTIS)
+    ├── turtlebot3_msgs/           ← Real files (cloned from ROBOTIS)
+    ├── turtlebot3/                ← Real files (cloned from ROBOTIS)
+    ├── turtlebot3_simulations/    ← Real files (cloned from ROBOTIS)
+    └── RS2Team8_Package/            ← Your custom packages here
+        ├── package.xml
+        ├── setup.py
+        ├── launch/
+        ├── config/
+        │   ├── maps/              ← .pgm and .yaml map files
+        │   ├── rviz/              ← .rviz config files
+        │   └── params/            ← .yaml parameter files
+        ├── worlds/                ← .world Gazebo world files
+        ├── urdf/                  ← Robot description files
+        └── RS2Team8_Package/        ← Python module
+            ├── __init__.py
+            └── nodes/             ← Your ROS nodes
+
+~/turtlebot3_ws/                   ← Build workspace (not in git)
+└── src/
+    └── r2_dTour -> /home/jsunne/git/RS2Team8/r2_dTour   ← SYMLINK
