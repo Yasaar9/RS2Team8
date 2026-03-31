@@ -43,7 +43,7 @@ source ~/.bashrc
 
 ## Rebuild fresh
 
-cd ~/turtlebot3_wsx
+cd ~/turtlebot3_ws
 rm -rf build install log
 colcon build --symlink-install
 source ~/.bashrc
