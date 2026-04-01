@@ -26,7 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'navigation_node = RS2Team8_Package.nodes.navigation_node:main',
+            'navigation_node = RS2Team8_Package.nodes.navigation:main',
+            'send_waypoint = RS2Team8_Package.nodes.send_waypoint:main',
         ],
     },
 )
