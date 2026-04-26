@@ -8,13 +8,14 @@ Navigation node that receives a waypoint (POI name or raw coordinates)
 and drives the TurtleBot to it using Nav2.
 
 Topics consumed:
-  /navigation/go_to_waypoint  (std_msgs/String)  — POI name e.g. "artifact_1"
+  /navigation/go_to_waypoint  (std_msgs/String)           — POI name e.g. "artifact_1"
   /navigation/go_to_pose      (geometry_msgs/PoseStamped) — raw coordinate goal
-  /navigation/cancel          (std_msgs/String)  — cancels current goal
+  /navigation/cancel          (std_msgs/String)           — cancels current goal
 
 Topics published:
-  /navigation/status           (std_msgs/String) — "IDLE" | "NAVIGATING" | "REACHED" | "FAILED"
+  /navigation/status           (std_msgs/String) — "IDLE"|"NAVIGATING"|"REACHED"|"FAILED"
   /navigation/waypoint_reached (std_msgs/Bool)   — True when goal is reached
+
 """
 
 import rclpy
@@ -22,9 +23,10 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import String, Bool
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
-from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav2_simple_commander.robot_navigator import BasicNavigator
 
 import threading
 import math
@@ -33,30 +35,16 @@ import time
 
 # ===========================================================================
 # INITIAL POSE CONFIGURATION
-# This is where the robot starts on the map (i.e. its spawn point in Gazebo).
-# If your robot spawns somewhere other than (0, 0), update these values.
-# x, y  — position in metres in the map frame
-# yaw   — starting heading in degrees (0 = East)
 # ===========================================================================
 INITIAL_POSE_X   = 0.0
 INITIAL_POSE_Y   = 0.0
-INITIAL_POSE_YAW = 0.0   # degrees
+INITIAL_POSE_YAW = 0.0
 # ===========================================================================
 
 
 # ===========================================================================
-# WAYPOINT CONFIGURATION
-# Add or edit POIs here. Each entry is:
-#   "name": (x, y, yaw_degrees)
-#
-# x, y  — position in the MAP frame (metres).
-#          To find coordinates: ros2 topic echo /odom
-#          Drive to each location with teleop and note the x/y values.
-#
-# yaw   — the heading the robot faces on arrival (degrees).
-#          0 = East, 90 = North, 180/-180 = West, -90 = South.
-#          All set to 0.0 for now to prevent arrival wiggling.
-#          Once Nav2 goal tolerances are tuned you can set these freely.
+# WAYPOINT CONFIGURATION  —  "name": (x, y, yaw_degrees)
+# Update x/y once the gallery map is finalised (ros2 topic echo /odom).
 # ===========================================================================
 WAYPOINTS = {
     "home":       (0.0,   0.0,   0.0),
@@ -70,14 +58,31 @@ WAYPOINTS = {
 # ===========================================================================
 
 
+# ===========================================================================
+# ARRIVAL CONFIGURATION
+#
+# XY_ARRIVAL_THRESHOLD — straight-line distance (metres) from the robot's
+#   AMCL pose to the goal at which we declare arrival and cancel the Nav2
+#   action. Nav2's distance_remaining reports arc length, not Euclidean
+#   distance, so we perform our own pose-based check instead.
+#   Rule of thumb: ~half the robot footprint radius (TurtleBot3 ~0.10 m).
+#
+# NAV2_XY_TOLERANCE / NAV2_YAW_TOLERANCE — pushed to the controller server
+#   as a secondary measure. YAW set to π to prevent the final heading-
+#   correction spin caused by stateful goal checking.
+# ===========================================================================
+XY_ARRIVAL_THRESHOLD = 0.15    # metres
+NAV2_XY_TOLERANCE    = 0.30    # metres
+NAV2_YAW_TOLERANCE   = math.pi # radians
+# ===========================================================================
+
+
 def yaw_to_quaternion(yaw_deg: float) -> tuple:
-    """Convert a yaw angle (degrees) to a quaternion (x, y, z, w)."""
     yaw = math.radians(yaw_deg)
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
 
 
 def make_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
-    """Build a PoseStamped goal in the map frame."""
     pose = PoseStamped()
     pose.header.frame_id = "map"
     pose.pose.position.x = x
@@ -92,78 +97,65 @@ def make_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
 
 
 class NavigationNode(Node):
-    """
-    Wraps BasicNavigator and exposes simple ROS 2 topics so other
-    subsystems (voice, buttons, behaviour tree) can command navigation
-    without knowing Nav2 internals.
-
-    On startup, automatically publishes the initial pose to AMCL so
-    you don't have to set it manually every session.
-    """
 
     def __init__(self):
         super().__init__("navigation_node")
 
-        # Nav2 simple commander — handles action client lifecycle
         self.navigator = BasicNavigator()
-
-        # ── Set initial pose automatically ───────────────────────────────────
-        # Tells AMCL where the robot starts on the map so it can localise.
         self._set_initial_pose()
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.status_pub  = self.create_publisher(String, "/navigation/status", 10)
         self.reached_pub = self.create_publisher(Bool,   "/navigation/waypoint_reached", 10)
+        self.cmd_vel_pub = self.create_publisher(Twist,  "/cmd_vel", 10)
 
         # ── Subscribers ──────────────────────────────────────────────────────
-        # Command by POI name (e.g. "artifact_1")
+        self.create_subscription(String,      "/navigation/go_to_waypoint", self._waypoint_name_callback, 10)
+        self.create_subscription(PoseStamped, "/navigation/go_to_pose",     self._pose_callback,          10)
+        self.create_subscription(String,      "/navigation/cancel",         self._cancel_callback,        10)
+
+        # AMCL pose — updated continuously for pose-based arrival check
+        self._robot_x: float = 0.0
+        self._robot_y: float = 0.0
+        self._pose_lock = threading.Lock()
         self.create_subscription(
-            String,
-            "/navigation/go_to_waypoint",
-            self._waypoint_name_callback,
-            10,
-        )
-        # Command by raw PoseStamped (from GUI or other nodes)
-        self.create_subscription(
-            PoseStamped,
-            "/navigation/go_to_pose",
-            self._pose_callback,
-            10,
-        )
-        # Cancel current goal
-        self.create_subscription(
-            String,
-            "/navigation/cancel",
-            self._cancel_callback,
+            PoseWithCovarianceStamped,
+            "/amcl_pose",
+            self._amcl_pose_callback,
             10,
         )
 
         # ── Internal state ───────────────────────────────────────────────────
-        self._navigating  = False
+        self._navigating = False
         self._nav_thread: threading.Thread | None = None
 
         self._publish_status("IDLE")
         self.get_logger().info("NavigationNode ready. Waiting for Nav2...")
 
-        # Block until Nav2 is fully active before accepting commands
         self.navigator.waitUntilNav2Active()
         self.get_logger().info("Nav2 is active — ready to navigate.")
+
+        self._apply_goal_tolerances()
+
+    # ── AMCL pose tracking ───────────────────────────────────────────────────
+
+    def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
+        with self._pose_lock:
+            self._robot_x = msg.pose.pose.position.x
+            self._robot_y = msg.pose.pose.position.y
+
+    def _distance_to_goal(self, goal_x: float, goal_y: float) -> float:
+        with self._pose_lock:
+            dx = self._robot_x - goal_x
+            dy = self._robot_y - goal_y
+        return math.hypot(dx, dy)
 
     # ── Initial pose ─────────────────────────────────────────────────────────
 
     def _set_initial_pose(self):
-        """
-        Publish the robot's starting position to AMCL automatically.
-        Called once on node startup — removes the need to set the pose
-        manually via RViz or the command line every session.
-
-        BasicNavigator.setInitialPose() expects a PoseStamped and
-        wraps it into a PoseWithCovarianceStamped internally.
-        """
         initial_pose = PoseStamped()
         initial_pose.header.frame_id = "map"
         initial_pose.header.stamp    = self.get_clock().now().to_msg()
-
         qx, qy, qz, qw = yaw_to_quaternion(INITIAL_POSE_YAW)
         initial_pose.pose.position.x    = INITIAL_POSE_X
         initial_pose.pose.position.y    = INITIAL_POSE_Y
@@ -172,99 +164,160 @@ class NavigationNode(Node):
         initial_pose.pose.orientation.y = qy
         initial_pose.pose.orientation.z = qz
         initial_pose.pose.orientation.w = qw
-
         self.navigator.setInitialPose(initial_pose)
         self.get_logger().info(
             f"Initial pose set: ({INITIAL_POSE_X}, {INITIAL_POSE_Y}, {INITIAL_POSE_YAW}°)"
         )
+
+    # ── Goal tolerance override ───────────────────────────────────────────────
+
+    def _apply_goal_tolerances(self):
+        """
+        Push nav2 goal checker parameters to the live controller_server.
+        Primary purpose is disabling the stateful yaw-correction phase that
+        causes oscillation. The main arrival check is pose-based, not these.
+        Parameter paths confirmed via: ros2 param list /controller_server | grep goal
+        """
+        from rcl_interfaces.msg import Parameter as ParamMsg
+        from rcl_interfaces.msg import ParameterValue, ParameterType
+        from rcl_interfaces.srv import SetParameters
+
+        client = self.create_client(SetParameters, "/controller_server/set_parameters")
+        if not client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn("[TOLERANCE] controller_server unavailable — skipping.")
+            return
+
+        def _double(name, value):
+            p = ParamMsg()
+            p.name  = name
+            p.value = ParameterValue()
+            p.value.type         = ParameterType.PARAMETER_DOUBLE
+            p.value.double_value = value
+            return p
+
+        def _bool(name, value):
+            p = ParamMsg()
+            p.name  = name
+            p.value = ParameterValue()
+            p.value.type       = ParameterType.PARAMETER_BOOL
+            p.value.bool_value = value
+            return p
+
+        request = SetParameters.Request()
+        request.parameters = [
+            _double("general_goal_checker.xy_goal_tolerance",  NAV2_XY_TOLERANCE),
+            _double("general_goal_checker.yaw_goal_tolerance", NAV2_YAW_TOLERANCE),
+            _bool(  "general_goal_checker.stateful",           False),
+        ]
+
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+
+        if future.result():
+            names = [
+                "general_goal_checker.xy_goal_tolerance",
+                "general_goal_checker.yaw_goal_tolerance",
+                "general_goal_checker.stateful",
+            ]
+            for name, result in zip(names, future.result().results):
+                if result.successful:
+                    self.get_logger().info(f"[TOLERANCE]   ✓ {name}")
+                else:
+                    self.get_logger().warn(f"[TOLERANCE]   ✗ {name}: {result.reason}")
+        else:
+            self.get_logger().warn("[TOLERANCE] set_parameters timed out.")
 
     # ── Subscriber callbacks ─────────────────────────────────────────────────
 
     def _waypoint_name_callback(self, msg: String):
         name = msg.data.strip().lower()
         if name not in WAYPOINTS:
-            self.get_logger().warn(
-                f"Unknown waypoint '{name}'. Available: {list(WAYPOINTS.keys())}"
-            )
+            self.get_logger().warn(f"Unknown waypoint '{name}'. Available: {list(WAYPOINTS.keys())}")
             return
         x, y, yaw = WAYPOINTS[name]
         self.get_logger().info(f"Received waypoint name: '{name}' → ({x}, {y}, {yaw}°)")
-        self._navigate_to(make_pose(x, y, yaw), label=name)
+        self._navigate_to(make_pose(x, y, yaw), label=name, goal_x=x, goal_y=y)
 
     def _pose_callback(self, msg: PoseStamped):
-        self.get_logger().info(
-            f"Received raw pose goal: ({msg.pose.position.x:.2f}, "
-            f"{msg.pose.position.y:.2f})"
-        )
+        x = msg.pose.position.x
+        y = msg.pose.position.y
+        self.get_logger().info(f"Received raw pose goal: ({x:.2f}, {y:.2f})")
         msg.header.frame_id = "map"
-        self._navigate_to(msg, label="raw_pose")
+        self._navigate_to(msg, label="raw_pose", goal_x=x, goal_y=y)
 
     def _cancel_callback(self, _msg: String):
-        self.get_logger().info("Cancel received — cancelling current goal.")
+        self.get_logger().info("Cancel received.")
         self.navigator.cancelTask()
+        self._stop_robot()
         self._navigating = False
         self._publish_status("IDLE")
 
     # ── Navigation logic ─────────────────────────────────────────────────────
 
-    def _navigate_to(self, pose: PoseStamped, label: str):
-        """
-        Kick off navigation in a background thread so the ROS 2 executor
-        (and therefore all other subscribers) keeps running while moving.
-        """
+    def _navigate_to(self, pose: PoseStamped, label: str, goal_x: float, goal_y: float):
         if self._navigating:
-            self.get_logger().warn(
-                "Already navigating — cancelling current goal first."
-            )
+            self.get_logger().warn("Already navigating — cancelling current goal first.")
             self.navigator.cancelTask()
+            self._stop_robot()
 
         pose.header.stamp = self.get_clock().now().to_msg()
-
-        self._navigating = True
-        self._nav_thread = threading.Thread(
+        self._navigating  = True
+        self._nav_thread  = threading.Thread(
             target=self._navigation_thread,
-            args=(pose, label),
+            args=(pose, label, goal_x, goal_y),
             daemon=True,
         )
         self._nav_thread.start()
 
-    def _navigation_thread(self, pose: PoseStamped, label: str):
-        """Runs in a background thread — blocks until goal is done."""
+    def _navigation_thread(self, pose: PoseStamped, label: str, goal_x: float, goal_y: float):
+        """
+        Background thread. Sends the Nav2 goal then polls /amcl_pose until
+        the robot is within XY_ARRIVAL_THRESHOLD of the goal, then cancels
+        the Nav2 action and declares REACHED.
+
+        Nav2's isTaskComplete() is not used as a completion condition because
+        distance_remaining reports arc length rather than Euclidean distance,
+        causing it to never fire on this platform.
+        """
         self._publish_status("NAVIGATING")
-        self.get_logger().info(f"Navigating to '{label}'...")
+        self.get_logger().info(f"[NAV] Navigating to '{label}'...")
 
         self.navigator.goToPose(pose)
 
-        last_feedback_time = 0.0
-        while not self.navigator.isTaskComplete():
-            now = time.time()
-            if now - last_feedback_time > 2.0:
+        last_log_time = 0.0
+
+        while True:
+            now  = time.time()
+            dist = self._distance_to_goal(goal_x, goal_y)
+
+            # ── Periodic progress log ─────────────────────────────────────
+            if now - last_log_time > 2.0:
                 feedback = self.navigator.getFeedback()
-                if feedback:
-                    dist = feedback.distance_remaining
-                    self.get_logger().info(
-                        f"  → '{label}': {dist:.2f} m remaining"
-                    )
-                last_feedback_time = now
+                arc_dist = feedback.distance_remaining if feedback else float("nan")
+                self.get_logger().info(
+                    f"[NAV] '{label}': straight={dist:.3f} m  "
+                    f"path={arc_dist:.3f} m  (threshold={XY_ARRIVAL_THRESHOLD:.2f} m)"
+                )
+                last_log_time = now
+
+            # ── Arrival check ─────────────────────────────────────────────
+            if dist <= XY_ARRIVAL_THRESHOLD:
+                self.get_logger().info(
+                    f"[NAV] '{label}': arrived at {dist:.3f} m — declaring REACHED."
+                )
+                self.navigator.cancelTask()
+                self._stop_robot()
+                self._navigating = False
+                self._publish_status("REACHED")
+                self._publish_reached(True)
+                return
+
             time.sleep(0.1)
 
-        result = self.navigator.getResult()
-        self._navigating = False
-
-        if result == TaskResult.SUCCEEDED:
-            self.get_logger().info(f"Reached '{label}'")
-            self._publish_status("REACHED")
-            self._publish_reached(True)
-        elif result == TaskResult.CANCELED:
-            self.get_logger().info(f"Navigation to '{label}' was cancelled.")
-            self._publish_status("IDLE")
-            self._publish_reached(False)
-        else:
-            self.get_logger().error(f"Failed to reach '{label}' (result={result})")
-            self._publish_status("FAILED")
-            self._publish_reached(False)
-
     # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def _stop_robot(self):
+        self.cmd_vel_pub.publish(Twist())
 
     def _publish_status(self, status: str):
         msg = String()
@@ -283,7 +336,6 @@ def main(args=None):
     rclpy.init(args=args)
     node = NavigationNode()
 
-    # MultiThreadedExecutor lets the nav thread and ROS callbacks run together
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 
@@ -293,6 +345,7 @@ def main(args=None):
         pass
     finally:
         node.navigator.cancelTask()
+        node._stop_robot()
         node.destroy_node()
         rclpy.shutdown()
 

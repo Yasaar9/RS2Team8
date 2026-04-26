@@ -31,7 +31,7 @@ ln -s ~/git/RS2Team8/r2_dTour
 ## Build and configure
 
 cd ~/turtlebot3_ws
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -Wno-dev
 echo 'source ~/turtlebot3_ws/install/setup.bash' >> ~/.bashrc
 source ~/.bashrc
 
@@ -45,20 +45,29 @@ source ~/.bashrc
 
 cd ~/turtlebot3_ws
 rm -rf build install log
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -Wno-dev
 source ~/.bashrc
 
 ## Run Simulation
 
-### Burger model
-export TURTLEBOT3_MODEL=burger
+### Empty World
+export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_gazebo empty_world.launch.py
 
-### Waffle model
+export TURTLEBOT3_MODEL=waffle_pi
+ros2 launch turtlebot3_gazebo empty_world.launch.py
+
+### World
 export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 
-### Waffle Pi model
+export TURTLEBOT3_MODEL=waffle_pi
+ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
+
+### House
+export TURTLEBOT3_MODEL=waffle
+ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
+
 export TURTLEBOT3_MODEL=waffle_pi
 ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
@@ -67,11 +76,14 @@ ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
 
+export TURTLEBOT3_MODEL=waffle_pi
+ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
+
 ### Start Navigation node
 
 ros2 run RS2Team8_Package navigation_node
 
-### Start Navigation node
+### Start Navigation code
 
 ros2 topic pub --once /navigation/go_to_waypoint std_msgs/String "data: 'artifact_1'"
 
