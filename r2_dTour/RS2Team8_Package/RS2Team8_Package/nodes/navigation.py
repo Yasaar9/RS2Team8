@@ -5,7 +5,7 @@ Subsystem 2: Motion Planning and Control
 Author: Jerry Sun
 
 Navigation node that receives a waypoint (POI name or raw coordinates)
-and drives the TurtleBot to it using Nav2.
+and drives the TurtleBot to it using Nav2 + Regulated Pure Pursuit controller.
 
 Topics consumed:
   /navigation/go_to_waypoint  (std_msgs/String)           — POI name e.g. "artifact_1"
@@ -15,18 +15,17 @@ Topics consumed:
 Topics published:
   /navigation/status           (std_msgs/String) — "IDLE"|"NAVIGATING"|"REACHED"|"FAILED"
   /navigation/waypoint_reached (std_msgs/Bool)   — True when goal is reached
-
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped, Twist
 from geometry_msgs.msg import PoseWithCovarianceStamped
-
-from nav2_simple_commander.robot_navigator import BasicNavigator
+from nav_msgs.msg import Odometry
 
 import threading
 import math
@@ -35,6 +34,7 @@ import time
 
 # ===========================================================================
 # INITIAL POSE CONFIGURATION
+# Update once the gallery map is finalised.
 # ===========================================================================
 INITIAL_POSE_X   = 0.0
 INITIAL_POSE_Y   = 0.0
@@ -61,19 +61,18 @@ WAYPOINTS = {
 # ===========================================================================
 # ARRIVAL CONFIGURATION
 #
-# XY_ARRIVAL_THRESHOLD — straight-line distance (metres) from the robot's
-#   AMCL pose to the goal at which we declare arrival and cancel the Nav2
-#   action. Nav2's distance_remaining reports arc length, not Euclidean
-#   distance, so we perform our own pose-based check instead.
+# XY_ARRIVAL_THRESHOLD — straight-line distance (metres) at which we declare
+#   arrival and cancel the Nav2 action ourselves. We do this rather than rely
+#   on Nav2's isTaskComplete() because distance_remaining reports arc-length,
+#   not Euclidean distance, and never converges on TurtleBot3 + RPP.
 #   Rule of thumb: ~half the robot footprint radius (TurtleBot3 ~0.10 m).
 #
-# NAV2_XY_TOLERANCE / NAV2_YAW_TOLERANCE — pushed to the controller server
-#   as a secondary measure. YAW set to π to prevent the final heading-
-#   correction spin caused by stateful goal checking.
+# AMCL_TIMEOUT_SEC — if /amcl_pose hasn't updated for this many seconds
+#   (robot stopped, filter not converging) we fall back to /odom for the
+#   distance check to avoid the arrival loop hanging indefinitely.
 # ===========================================================================
-XY_ARRIVAL_THRESHOLD = 0.15    # metres
-NAV2_XY_TOLERANCE    = 0.30    # metres
-NAV2_YAW_TOLERANCE   = math.pi # radians
+XY_ARRIVAL_THRESHOLD = 0.15   # metres
+AMCL_TIMEOUT_SEC     = 1.0    # seconds before falling back to /odom
 # ===========================================================================
 
 
@@ -114,14 +113,26 @@ class NavigationNode(Node):
         self.create_subscription(PoseStamped, "/navigation/go_to_pose",     self._pose_callback,          10)
         self.create_subscription(String,      "/navigation/cancel",         self._cancel_callback,        10)
 
-        # AMCL pose — updated continuously for pose-based arrival check
+        # ── Pose tracking (AMCL primary, /odom fallback) ─────────────────────
+        # /amcl_pose is in the map frame — globally consistent — but AMCL may
+        # stop publishing when the robot is stationary. /odom is in the odom
+        # frame — drifts over time — but updates continuously. We prefer AMCL
+        # and fall back to odom only if AMCL has been silent for AMCL_TIMEOUT_SEC.
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._pose_lock = threading.Lock()
+        self._last_amcl_time: float = 0.0
+
         self.create_subscription(
             PoseWithCovarianceStamped,
             "/amcl_pose",
             self._amcl_pose_callback,
+            10,
+        )
+        self.create_subscription(
+            Odometry,
+            "/odom",
+            self._odom_callback,
             10,
         )
 
@@ -135,14 +146,20 @@ class NavigationNode(Node):
         self.navigator.waitUntilNav2Active()
         self.get_logger().info("Nav2 is active — ready to navigate.")
 
-        self._apply_goal_tolerances()
-
-    # ── AMCL pose tracking ───────────────────────────────────────────────────
+    # ── Pose tracking ────────────────────────────────────────────────────────
 
     def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
         with self._pose_lock:
             self._robot_x = msg.pose.pose.position.x
             self._robot_y = msg.pose.pose.position.y
+        self._last_amcl_time = time.time()
+
+    def _odom_callback(self, msg: Odometry):
+        # Only use odometry if AMCL has not published recently.
+        if time.time() - self._last_amcl_time > AMCL_TIMEOUT_SEC:
+            with self._pose_lock:
+                self._robot_x = msg.pose.pose.position.x
+                self._robot_y = msg.pose.pose.position.y
 
     def _distance_to_goal(self, goal_x: float, goal_y: float) -> float:
         with self._pose_lock:
@@ -169,64 +186,6 @@ class NavigationNode(Node):
             f"Initial pose set: ({INITIAL_POSE_X}, {INITIAL_POSE_Y}, {INITIAL_POSE_YAW}°)"
         )
 
-    # ── Goal tolerance override ───────────────────────────────────────────────
-
-    def _apply_goal_tolerances(self):
-        """
-        Push nav2 goal checker parameters to the live controller_server.
-        Primary purpose is disabling the stateful yaw-correction phase that
-        causes oscillation. The main arrival check is pose-based, not these.
-        Parameter paths confirmed via: ros2 param list /controller_server | grep goal
-        """
-        from rcl_interfaces.msg import Parameter as ParamMsg
-        from rcl_interfaces.msg import ParameterValue, ParameterType
-        from rcl_interfaces.srv import SetParameters
-
-        client = self.create_client(SetParameters, "/controller_server/set_parameters")
-        if not client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().warn("[TOLERANCE] controller_server unavailable — skipping.")
-            return
-
-        def _double(name, value):
-            p = ParamMsg()
-            p.name  = name
-            p.value = ParameterValue()
-            p.value.type         = ParameterType.PARAMETER_DOUBLE
-            p.value.double_value = value
-            return p
-
-        def _bool(name, value):
-            p = ParamMsg()
-            p.name  = name
-            p.value = ParameterValue()
-            p.value.type       = ParameterType.PARAMETER_BOOL
-            p.value.bool_value = value
-            return p
-
-        request = SetParameters.Request()
-        request.parameters = [
-            _double("general_goal_checker.xy_goal_tolerance",  NAV2_XY_TOLERANCE),
-            _double("general_goal_checker.yaw_goal_tolerance", NAV2_YAW_TOLERANCE),
-            _bool(  "general_goal_checker.stateful",           False),
-        ]
-
-        future = client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-
-        if future.result():
-            names = [
-                "general_goal_checker.xy_goal_tolerance",
-                "general_goal_checker.yaw_goal_tolerance",
-                "general_goal_checker.stateful",
-            ]
-            for name, result in zip(names, future.result().results):
-                if result.successful:
-                    self.get_logger().info(f"[TOLERANCE]   ✓ {name}")
-                else:
-                    self.get_logger().warn(f"[TOLERANCE]   ✗ {name}: {result.reason}")
-        else:
-            self.get_logger().warn("[TOLERANCE] set_parameters timed out.")
-
     # ── Subscriber callbacks ─────────────────────────────────────────────────
 
     def _waypoint_name_callback(self, msg: String):
@@ -235,7 +194,7 @@ class NavigationNode(Node):
             self.get_logger().warn(f"Unknown waypoint '{name}'. Available: {list(WAYPOINTS.keys())}")
             return
         x, y, yaw = WAYPOINTS[name]
-        self.get_logger().info(f"Received waypoint name: '{name}' → ({x}, {y}, {yaw}°)")
+        self.get_logger().info(f"Received waypoint name: '{name}' -> ({x}, {y}, {yaw}deg)")
         self._navigate_to(make_pose(x, y, yaw), label=name, goal_x=x, goal_y=y)
 
     def _pose_callback(self, msg: PoseStamped):
@@ -271,13 +230,15 @@ class NavigationNode(Node):
 
     def _navigation_thread(self, pose: PoseStamped, label: str, goal_x: float, goal_y: float):
         """
-        Background thread. Sends the Nav2 goal then polls /amcl_pose until
-        the robot is within XY_ARRIVAL_THRESHOLD of the goal, then cancels
-        the Nav2 action and declares REACHED.
+        Background thread. Sends the Nav2 goal then polls pose until the robot
+        is within XY_ARRIVAL_THRESHOLD, then cancels the Nav2 action and
+        declares REACHED. Also handles Nav2 reporting task completion early
+        (e.g. FAILED due to a blocked path).
 
-        Nav2's isTaskComplete() is not used as a completion condition because
-        distance_remaining reports arc length rather than Euclidean distance,
-        causing it to never fire on this platform.
+        We do not use isTaskComplete() as the primary completion condition
+        because distance_remaining reports arc-length, not Euclidean distance,
+        and never converges on TurtleBot3. isTaskComplete() is checked as a
+        secondary condition to catch genuine failures.
         """
         self._publish_status("NAVIGATING")
         self.get_logger().info(f"[NAV] Navigating to '{label}'...")
@@ -294,13 +255,15 @@ class NavigationNode(Node):
             if now - last_log_time > 2.0:
                 feedback = self.navigator.getFeedback()
                 arc_dist = feedback.distance_remaining if feedback else float("nan")
+                using_odom = (now - self._last_amcl_time) > AMCL_TIMEOUT_SEC
                 self.get_logger().info(
                     f"[NAV] '{label}': straight={dist:.3f} m  "
                     f"path={arc_dist:.3f} m  (threshold={XY_ARRIVAL_THRESHOLD:.2f} m)"
+                    + ("  [odom fallback]" if using_odom else "")
                 )
                 last_log_time = now
 
-            # ── Arrival check ─────────────────────────────────────────────
+            # ── Arrival check (primary) ───────────────────────────────────
             if dist <= XY_ARRIVAL_THRESHOLD:
                 self.get_logger().info(
                     f"[NAV] '{label}': arrived at {dist:.3f} m — declaring REACHED."
@@ -312,11 +275,35 @@ class NavigationNode(Node):
                 self._publish_reached(True)
                 return
 
+            # ── Nav2 failure check (secondary) ───────────────────────────
+            if self.navigator.isTaskComplete():
+                result = self.navigator.getResult()
+                if result == TaskResult.SUCCEEDED:
+                    # Nav2 thinks it finished but we are not within threshold —
+                    # accept anyway (RPP may stop slightly short of centre).
+                    self.get_logger().info(
+                        f"[NAV] '{label}': Nav2 SUCCEEDED at dist={dist:.3f} m — accepting."
+                    )
+                    self._stop_robot()
+                    self._navigating = False
+                    self._publish_status("REACHED")
+                    self._publish_reached(True)
+                else:
+                    self.get_logger().warn(
+                        f"[NAV] '{label}': Nav2 ended with result={result} — declaring FAILED."
+                    )
+                    self._stop_robot()
+                    self._navigating = False
+                    self._publish_status("FAILED")
+                    self._publish_reached(False)
+                return
+
             time.sleep(0.1)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _stop_robot(self):
+        """Publish a zero-velocity Twist to halt the robot immediately."""
         self.cmd_vel_pub.publish(Twist())
 
     def _publish_status(self, status: str):
