@@ -13,7 +13,7 @@ Topics consumed:
   /navigation/cancel          (std_msgs/String)           — cancels current goal
 
 Topics published:
-  /navigation/status           (std_msgs/String) — "IDLE"|"NAVIGATING"|"REACHED"|"FAILED"
+  /navigation/status           (std_msgs/String) — "IDLE"|"NAVIGATING"|"OBSTACLE"|"REACHED"|"FAILED"
   /navigation/waypoint_reached (std_msgs/Bool)   — True when goal is reached
 """
 
@@ -26,6 +26,7 @@ from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped, Twist
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 
 import threading
 import math
@@ -73,6 +74,24 @@ WAYPOINTS = {
 # ===========================================================================
 XY_ARRIVAL_THRESHOLD = 0.15   # metres
 AMCL_TIMEOUT_SEC     = 1.0    # seconds before falling back to /odom
+# ===========================================================================
+
+
+# ===========================================================================
+# OBSTACLE DETECTION CONFIGURATION
+#
+# OBSTACLE_STOP_DIST  — minimum range (metres) in the forward arc that
+#   triggers an emergency stop. Matches the D-grade requirement of 0.5 m.
+#
+# OBSTACLE_CLEAR_DIST — range at which the path is considered clear again.
+#   Slightly larger than STOP to add hysteresis and prevent rapid on/off.
+#
+# OBSTACLE_ARC_DEG    — total forward arc (degrees) scanned for obstacles.
+#   +/- 30 deg (60 deg total) covers the robot's likely travel corridor.
+# ===========================================================================
+OBSTACLE_STOP_DIST  = 0.5   # metres
+OBSTACLE_CLEAR_DIST = 0.6   # metres
+OBSTACLE_ARC_DEG    = 60    # degrees total forward arc
 # ===========================================================================
 
 
@@ -136,6 +155,19 @@ class NavigationNode(Node):
             10,
         )
 
+        # ── Obstacle detection ───────────────────────────────────────────────
+        # Subscribes to /scan and checks the forward arc for obstacles.
+        # _obstacle_blocked is set True when something is within OBSTACLE_STOP_DIST
+        # and cleared when the path opens beyond OBSTACLE_CLEAR_DIST.
+        # The navigation thread pauses while blocked and resumes automatically.
+        self._obstacle_blocked: bool = False
+        self.create_subscription(
+            LaserScan,
+            "/scan",
+            self._scan_callback,
+            10,
+        )
+
         # ── Internal state ───────────────────────────────────────────────────
         self._navigating = False
         self._nav_thread: threading.Thread | None = None
@@ -166,6 +198,55 @@ class NavigationNode(Node):
             dx = self._robot_x - goal_x
             dy = self._robot_y - goal_y
         return math.hypot(dx, dy)
+
+    # ── Obstacle detection ───────────────────────────────────────────────────
+
+    def _scan_callback(self, msg: LaserScan):
+        """
+        Check the forward arc of the laser scan for obstacles.
+
+        TurtleBot3 LaserScan: 360 readings, index 0 = directly forward,
+        increasing counter-clockwise. We check +/- (OBSTACLE_ARC_DEG / 2)
+        degrees around index 0.
+
+        Uses hysteresis: stops at OBSTACLE_STOP_DIST, resumes at
+        OBSTACLE_CLEAR_DIST to prevent rapid toggling.
+        """
+        num = len(msg.ranges)
+        if num == 0:
+            return
+
+        half_arc = int((OBSTACLE_ARC_DEG / 2.0) / 360.0 * num)
+
+        # Forward arc: last half_arc readings + first half_arc readings
+        indices = list(range(num - half_arc, num)) + list(range(0, half_arc + 1))
+        valid = [
+            msg.ranges[i]
+            for i in indices
+            if msg.range_min < msg.ranges[i] < msg.range_max
+        ]
+
+        if not valid:
+            return
+
+        min_dist = min(valid)
+
+        if not self._obstacle_blocked and min_dist < OBSTACLE_STOP_DIST:
+            self._obstacle_blocked = True
+            self.get_logger().warn(
+                f"[OBSTACLE] Obstacle detected at {min_dist:.2f} m — emergency stop."
+            )
+            self._stop_robot()
+            if self._navigating:
+                self._publish_status("OBSTACLE")
+
+        elif self._obstacle_blocked and min_dist > OBSTACLE_CLEAR_DIST:
+            self._obstacle_blocked = False
+            self.get_logger().info(
+                f"[OBSTACLE] Path cleared ({min_dist:.2f} m) — resuming navigation."
+            )
+            if self._navigating:
+                self._publish_status("NAVIGATING")
 
     # ── Initial pose ─────────────────────────────────────────────────────────
 
@@ -235,10 +316,10 @@ class NavigationNode(Node):
         declares REACHED. Also handles Nav2 reporting task completion early
         (e.g. FAILED due to a blocked path).
 
-        We do not use isTaskComplete() as the primary completion condition
-        because distance_remaining reports arc-length, not Euclidean distance,
-        and never converges on TurtleBot3. isTaskComplete() is checked as a
-        secondary condition to catch genuine failures.
+        When _obstacle_blocked is True, the loop publishes zero velocity and
+        pauses. Nav2 continues to hold the goal but receives no cmd_vel from
+        the controller while we are stopping it. When the obstacle clears,
+        the loop resumes and Nav2 takes back over driving.
         """
         self._publish_status("NAVIGATING")
         self.get_logger().info(f"[NAV] Navigating to '{label}'...")
@@ -248,7 +329,14 @@ class NavigationNode(Node):
         last_log_time = 0.0
 
         while True:
-            now  = time.time()
+            now = time.time()
+
+            # ── Obstacle hold ─────────────────────────────────────────────
+            if self._obstacle_blocked:
+                self._stop_robot()
+                time.sleep(0.1)
+                continue
+
             dist = self._distance_to_goal(goal_x, goal_y)
 
             # ── Periodic progress log ─────────────────────────────────────
@@ -279,8 +367,6 @@ class NavigationNode(Node):
             if self.navigator.isTaskComplete():
                 result = self.navigator.getResult()
                 if result == TaskResult.SUCCEEDED:
-                    # Nav2 thinks it finished but we are not within threshold —
-                    # accept anyway (RPP may stop slightly short of centre).
                     self.get_logger().info(
                         f"[NAV] '{label}': Nav2 SUCCEEDED at dist={dist:.3f} m — accepting."
                     )
