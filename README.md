@@ -16,6 +16,10 @@ sudo apt install ros-humble-cartographer-ros
 sudo apt install ros-humble-navigation2
 sudo apt install ros-humble-nav2-bringup
 
+sudo apt install python3-pip
+sudo apt install mpg123
+pip3 install gtts
+
 ## Create git folder and clone
 
 mkdir -p ~/git
@@ -50,34 +54,29 @@ source ~/.bashrc
 
 ## Run Simulation
 
-### Empty World
-export TURTLEBOT3_MODEL=waffle
-ros2 launch turtlebot3_gazebo empty_world.launch.py
+### Permanently Select Turtlebot Model
 
-export TURTLEBOT3_MODEL=waffle_pi
+echo "export TURTLEBOT3_MODEL=waffle_pi" >> ~/.bashrc
+
+### Empty World
+
 ros2 launch turtlebot3_gazebo empty_world.launch.py
 
 ### World
-export TURTLEBOT3_MODEL=waffle
-ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 
-export TURTLEBOT3_MODEL=waffle_pi
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 
 ### House
-export TURTLEBOT3_MODEL=waffle
-ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
-export TURTLEBOT3_MODEL=waffle_pi
 ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
 ### Start Nav2
 
-export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
 
-export TURTLEBOT3_MODEL=waffle_pi
-ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
+ros2 launch turtlebot3_navigation2 navigation2.launch.py \
+  map:=$HOME/map.yaml \
+  params_file:=$HOME/git/RS2Team8/r2_dTour/RS2Team8_Package/config/params/nav2_params.yaml
 
 ### Start Navigation node
 
