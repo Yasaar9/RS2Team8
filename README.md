@@ -82,9 +82,9 @@ ros2 launch turtlebot3_navigation2 navigation2.launch.py \
 
 ros2 run RS2Team8_Package navigation_node
 
-### Start Navigation code
+### Start Ui Node
 
-ros2 topic pub --once /navigation/go_to_waypoint std_msgs/String "data: 'artifact_1'"
+ros2 run RS2Team8_Package ui_node
 
 
 ## FOLDER STRUCTURE
