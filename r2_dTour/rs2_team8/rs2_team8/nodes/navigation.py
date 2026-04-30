@@ -51,18 +51,22 @@ INITIAL_POSE_YAW = 0.0
 
 # ===========================================================================
 # WAYPOINT CONFIGURATION  —  "name": (x, y, yaw_degrees)
-# Coordinates recorded from /amcl_pose in turtlebot3_world simulation.
-# Yaw converted from quaternion: yaw_deg = degrees(2 * atan2(qz, qw))
+# Positions measured using a 0.5m radius cylinder in Gazebo world frame,
+# then converted to map frame by adding the spawn offset:
+#   map_x = world_x + 2.0  (spawn is at world -2.0, map 0.0)
+#   map_y = world_y + 0.5  (spawn is at world -0.5, map 0.0)
+# Yaw set so robot faces point of interest on arrival.
+# ROS yaw convention: 0=East(+X), 90=North(+Y), 180=West, -90=South(-Y)
 # ===========================================================================
 WAYPOINTS = {
     "home":        ( 0.000,  0.000,    0.0),
-    "artifact_1":  ( 1.165,  1.196,  146.1),
-    "artifact_2":  ( 2.741,  1.190,    6.7),
-    "artifact_3":  ( 2.571, -0.409,  -31.9),
-    "artifact_4":  ( 2.119,  0.377,  -31.7),
-    "toilets":     ( 3.990,  0.381,    8.2),
-    "fire_exit_1": ( 1.104, -1.205, -134.7),
-    "fire_exit_2": ( 0.784,  2.034,  111.2),
+    "artifact_1":  ( 1.029,  2.240, -135.0),  # faces SW toward artifact
+    "artifact_2":  ( 2.963,  2.253,  135.0),  # faces NW toward artifact
+    "artifact_3":  ( 2.950, -1.261,   45.0),  # faces NE toward artifact
+    "artifact_4":  ( 1.030, -1.237,  -45.0),  # faces SE toward artifact
+    "toilets":     ( 3.819,  0.485,   90.0),  # faces North toward toilets
+    "fire_exit_1": ( 1.994,  2.502,  180.0),  # faces West toward exit
+    "fire_exit_2": ( 1.987, -1.528,    0.0),  # faces East toward exit
 }
 # ===========================================================================
 

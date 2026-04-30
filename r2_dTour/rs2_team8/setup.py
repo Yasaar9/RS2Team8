@@ -2,7 +2,7 @@ from setuptools import setup
 from glob import glob
 import os
 
-package_name = 'RS2Team8_Package'
+package_name = 'rs2_team8'
 
 setup(
     name=package_name,
@@ -26,10 +26,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'navigation_node = RS2Team8_Package.nodes.navigation:main',
-            'send_waypoint = RS2Team8_Package.nodes.send_waypoint:main',
-            'ui_node = RS2Team8_Package.nodes.ui:main',
-            'detector_node = RS2Team8_Package.nodes.detector_node:main',
+            'navigation_node = rs2_team8.nodes.navigation:main',
+            'send_waypoint = rs2_team8.nodes.send_waypoint:main',
+            'ui_node = rs2_team8.nodes.ui:main',
         ],
     },
 )

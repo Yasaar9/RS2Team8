@@ -40,6 +40,7 @@ echo 'source ~/turtlebot3_ws/install/setup.bash' >> ~/.bashrc
 echo 'export ROS_DOMAIN_ID=71 #TURTLEBOT3' >> ~/.bashrc
 echo 'source /usr/share/gazebo/setup.sh' >> ~/.bashrc
 echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
+source ~/.bashrc
 
 
 On any new terminal:
@@ -50,6 +51,7 @@ source ~/.bashrc
 cd ~/turtlebot3_ws
 rm -rf build install log
 colcon build --symlink-install --cmake-args -Wno-dev
+source ~/.bashrc
 
 ## Run Simulation
 
@@ -66,16 +68,16 @@ ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
 
 ros2 launch turtlebot3_navigation2 navigation2.launch.py \
-  map:=$HOME/map.yaml \
-  params_file:=$HOME/git/RS2Team8/r2_dTour/RS2Team8_Package/config/params/nav2_params.yaml
+  map:=$HOME/git/RS2Team8/r2_dTour/0_maps/map.yaml \
+  params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 
 ### Start Navigation node
 
-ros2 run RS2Team8_Package navigation_node
+ros2 run rs2_team8 navigation_node
 
 ### Start Ui Node
 
-ros2 run RS2Team8_Package ui_node
+ros2 run rs2_team8 ui_node
 
 ## Connect to real turtlebot
 
@@ -105,7 +107,7 @@ export ROS_DOMAIN_ID=<your_domain_id>
 On any new terminal:
 source ~/.bashrc
 
-### Each tutlebot node
+### Each turtlebot node
 
 Start turtlebot program on new ssh terminal:
 ros2 launch turtlebot3_bringup robot.launch.py
@@ -113,8 +115,8 @@ ros2 launch turtlebot3_bringup robot.launch.py
 Teleop on new ssh terminal:
 ros2 run turtlebot3_teleop teleop_keyboard
 
-Camera setup on local terminal:
-ros2 run camera_ros camera_node --ros-args -p format:=MJPEG
+Camera dependencies:
+sudo apt install ros-humble-image-*
 
 Camera on new ssh terminal:
 ros2 run camera_ros camera_node --ros-args -p format:=MJPEG
@@ -144,7 +146,7 @@ ros2 run nav2_map_server map_saver_cli -f ~/git/RS2Team8/r2_dTour/0_maps
     ├── turtlebot3_msgs/           ← Real files (cloned from ROBOTIS)
     ├── turtlebot3/                ← Real files (cloned from ROBOTIS)
     ├── turtlebot3_simulations/    ← Real files (cloned from ROBOTIS)
-    └── RS2Team8_Package/            ← Your custom packages here
+    └── rs2_team8/            ← Your custom packages here
         ├── package.xml
         ├── setup.py
         ├── launch/
@@ -154,12 +156,12 @@ ros2 run nav2_map_server map_saver_cli -f ~/git/RS2Team8/r2_dTour/0_maps
         │   └── params/            ← .yaml parameter files
         ├── worlds/                ← .world Gazebo world files
         ├── urdf/                  ← Robot description files
-        └── RS2Team8_Package/
+        └── rs2_team8/
             ├── __init__.py
             └── nodes/             ← Your ROS nodes
 
 ~/turtlebot3_ws/                   ← Build workspace (not in git)
-└── src/
+└── src/ros2
     └── r2_dTour -> /home/jsunne/git/RS2Team8/r2_dTour   ← SYMLINK
 
 ## Rose Nodes
@@ -175,7 +177,7 @@ ros2 node list
 
 # List packages in your workspace only
 ros2 pkg list | grep -v /opt/ros
-RS2Team8_Package
+rs2_team8
 ackermann_msgs
 action_msgs
 action_tutorials_cpp
@@ -558,7 +560,7 @@ visualization_msgs
 xacro
 yaml_cpp_vendor
 zstd_vendor
-RS2Team8_Package
+rs2_team8
 ackermann_msgs
 action_msgs
 action_tutorials_cpp
