@@ -16,6 +16,10 @@ sudo apt install ros-humble-cartographer-ros
 sudo apt install ros-humble-navigation2
 sudo apt install ros-humble-nav2-bringup
 
+sudo apt install python3-pip
+sudo apt install mpg123
+pip3 install gtts
+
 ## Create git folder and clone
 
 mkdir -p ~/git
@@ -31,7 +35,7 @@ ln -s ~/git/RS2Team8/r2_dTour
 ## Build and configure
 
 cd ~/turtlebot3_ws
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -Wno-dev
 echo 'source ~/turtlebot3_ws/install/setup.bash' >> ~/.bashrc
 source ~/.bashrc
 
@@ -45,35 +49,42 @@ source ~/.bashrc
 
 cd ~/turtlebot3_ws
 rm -rf build install log
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -Wno-dev
 source ~/.bashrc
 
 ## Run Simulation
 
-### Burger model
-export TURTLEBOT3_MODEL=burger
+### Permanently Select Turtlebot Model
+
+echo "export TURTLEBOT3_MODEL=waffle_pi" >> ~/.bashrc
+
+### Empty World
+
 ros2 launch turtlebot3_gazebo empty_world.launch.py
 
-### Waffle model
-export TURTLEBOT3_MODEL=waffle
+### World
+
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 
-### Waffle Pi model
-export TURTLEBOT3_MODEL=waffle_pi
+### House
+
 ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
 ### Start Nav2
 
-export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
+
+ros2 launch turtlebot3_navigation2 navigation2.launch.py \
+  map:=$HOME/map.yaml \
+  params_file:=$HOME/git/RS2Team8/r2_dTour/RS2Team8_Package/config/params/nav2_params.yaml
 
 ### Start Navigation node
 
 ros2 run RS2Team8_Package navigation_node
 
-### Start Navigation node
+### Start Ui Node
 
-ros2 topic pub --once /navigation/go_to_waypoint std_msgs/String "data: 'artifact_1'"
+ros2 run RS2Team8_Package ui_node
 
 
 ## FOLDER STRUCTURE

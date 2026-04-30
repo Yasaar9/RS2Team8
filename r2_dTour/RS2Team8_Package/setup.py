@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'navigation_node = RS2Team8_Package.nodes.navigation:main',
             'send_waypoint = RS2Team8_Package.nodes.send_waypoint:main',
+            'ui_node = RS2Team8_Package.nodes.ui:main',
         ],
     },
 )
