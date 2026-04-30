@@ -118,8 +118,8 @@ XY_ARRIVAL_THRESHOLD = 0.15   # metres
 # OBSTACLE_ARC_DEG    — total forward arc (degrees) scanned for obstacles.
 #   60 deg total (+/- 30 deg) covers the robot's travel corridor.
 # ===========================================================================
-OBSTACLE_STOP_DIST  = 0.5   # metres  (D-grade: emergency stop within 0.5m)
-OBSTACLE_CLEAR_DIST = 0.65  # metres  (slightly larger for hysteresis)
+OBSTACLE_STOP_DIST  = 0.35   # metres  (D-grade: emergency stop within 0.5m)
+OBSTACLE_CLEAR_DIST = 0.5  # metres  (slightly larger for hysteresis)
 OBSTACLE_ARC_DEG    = 60    # degrees total forward arc
 # ===========================================================================
 
