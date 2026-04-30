@@ -43,32 +43,41 @@ import time
 # INITIAL POSE CONFIGURATION
 # Update once the gallery map is finalised.
 # ===========================================================================
-INITIAL_POSE_X   = -2.0
-INITIAL_POSE_Y   = -0.5
+INITIAL_POSE_X   = 0.0
+INITIAL_POSE_Y   = 0.0
 INITIAL_POSE_YAW = 0.0
 # ===========================================================================
 
 
 # ===========================================================================
 # WAYPOINT CONFIGURATION  —  "name": (x, y, yaw_degrees)
-# Update x/y once the gallery map is finalised (ros2 topic echo /amcl_pose).
+# Coordinates recorded from /amcl_pose in turtlebot3_world simulation.
+# Yaw converted from quaternion: yaw_deg = degrees(2 * atan2(qz, qw))
 # ===========================================================================
 WAYPOINTS = {
-    "home":       (0.0,   0.0,   0.0),
-    "artifact_1": (1.5,   0.5,   0.0),
-    "artifact_2": (3.0,   1.0,   0.0),
-    "artifact_3": (2.5,  -1.5,   0.0),
-    "artifact_4": (0.5,  -2.0,   0.0),
-    "toilets":    (4.0,   2.0,   0.0),
-    "entrance":   (-0.5,  0.0,   0.0),
+    "home":        ( 0.000,  0.000,    0.0),
+    "artifact_1":  ( 1.165,  1.196,  146.1),
+    "artifact_2":  ( 2.741,  1.190,    6.7),
+    "artifact_3":  ( 2.571, -0.409,  -31.9),
+    "artifact_4":  ( 2.119,  0.377,  -31.7),
+    "toilets":     ( 3.990,  0.381,    8.2),
+    "fire_exit_1": ( 1.104, -1.205, -134.7),
+    "fire_exit_2": ( 0.784,  2.034,  111.2),
 }
 # ===========================================================================
 
 
 # ===========================================================================
-# UI LABEL → WAYPOINT NAME MAP
+# FIRE EXIT LIST — used by nearest fire exit logic.
+# Add any additional fire exit waypoint names here.
+# ===========================================================================
+FIRE_EXITS = ["fire_exit_1", "fire_exit_2"]
+# ===========================================================================
+
+
+# ===========================================================================
+# UI LABEL -> WAYPOINT NAME MAP
 # Maps the display names from the UI "Go To" buttons to WAYPOINTS keys above.
-# Update these once artifact positions are confirmed in the gallery.
 # ===========================================================================
 UI_TO_WAYPOINT = {
     "modern art":          "artifact_1",
@@ -76,7 +85,7 @@ UI_TO_WAYPOINT = {
     "portrait":            "artifact_3",
     "historical artefact": "artifact_4",
     "toilet":              "toilets",
-    "fire exit":           "entrance",
+    "fire exit":           "nearest_fire_exit",   # resolved dynamically at runtime
 }
 # ===========================================================================
 
@@ -105,8 +114,8 @@ XY_ARRIVAL_THRESHOLD = 0.15   # metres
 # OBSTACLE_ARC_DEG    — total forward arc (degrees) scanned for obstacles.
 #   60 deg total (+/- 30 deg) covers the robot's travel corridor.
 # ===========================================================================
-OBSTACLE_STOP_DIST  = 0.5   # metres
-OBSTACLE_CLEAR_DIST = 0.6   # metres
+OBSTACLE_STOP_DIST  = 0.5   # metres  (D-grade: emergency stop within 0.5m)
+OBSTACLE_CLEAR_DIST = 0.65  # metres  (slightly larger for hysteresis)
 OBSTACLE_ARC_DEG    = 60    # degrees total forward arc
 # ===========================================================================
 
@@ -393,6 +402,30 @@ class NavigationNode(Node):
         self._navigating = False
         self._publish_status("IDLE")
 
+    def _nearest_fire_exit(self) -> str:
+        """
+        Returns the name of the closest fire exit waypoint to the robot's
+        current AMCL position. Compares straight-line distance to all entries
+        in FIRE_EXITS and returns the nearest one.
+        """
+        with self._pose_lock:
+            rx, ry = self._robot_x, self._robot_y
+
+        best_name = FIRE_EXITS[0]
+        best_dist = float("inf")
+        for name in FIRE_EXITS:
+            ex, ey, _ = WAYPOINTS[name]
+            dist = math.hypot(rx - ex, ry - ey)
+            self.get_logger().info(
+                f"[FIRE EXIT] {name}: distance={dist:.2f} m from robot ({rx:.2f}, {ry:.2f})"
+            )
+            if dist < best_dist:
+                best_dist = dist
+                best_name = name
+
+        self.get_logger().info(f"[FIRE EXIT] Nearest exit: {best_name} ({best_dist:.2f} m)")
+        return best_name
+
     def _ui_goto_callback(self, msg: String):
         """Receives 'Go To' button presses from the UI and maps to waypoints."""
         label    = msg.data.strip().lower()
@@ -403,6 +436,11 @@ class NavigationNode(Node):
                 f"Available UI labels: {list(UI_TO_WAYPOINT.keys())}"
             )
             return
+
+        # Resolve nearest fire exit dynamically at request time
+        if waypoint == "nearest_fire_exit":
+            waypoint = self._nearest_fire_exit()
+
         self.get_logger().info(f"[UI] Go To '{label}' -> waypoint '{waypoint}'")
         x, y, yaw = WAYPOINTS[waypoint]
         self._navigate_to(make_pose(x, y, yaw), label=waypoint, goal_x=x, goal_y=y)
@@ -444,6 +482,7 @@ class NavigationNode(Node):
 
         self.navigator.goToPose(pose)
 
+        retry_count   = 2   # number of re-attempts if Nav2 fails
         last_log_time = 0.0
 
         while True:
@@ -496,7 +535,21 @@ class NavigationNode(Node):
                     self._publish_reached(True)
                 else:
                     self.get_logger().warn(
-                        f"[NAV] '{label}': Nav2 ended with result={result} — FAILED."
+                        f"[NAV] '{label}': Nav2 result={result}."
+                    )
+                    if retry_count > 0:
+                        self.get_logger().warn(
+                            f"[NAV] '{label}': Retrying ({retry_count} attempt(s) left)..."
+                        )
+                        self._stop_robot()
+                        time.sleep(0.5)
+                        pose.header.stamp = self.get_clock().now().to_msg()
+                        self.navigator.goToPose(pose)
+                        retry_count -= 1
+                        last_log_time = 0.0
+                        continue
+                    self.get_logger().warn(
+                        f"[NAV] '{label}': All retries exhausted — FAILED."
                     )
                     self._stop_robot()
                     self._navigating = False

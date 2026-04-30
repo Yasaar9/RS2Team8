@@ -115,6 +115,9 @@ class GreetingNode(Node):
         self.navigation_publisher = self.create_publisher(Bool, '/start_navigation', 10)
         self.selected_artifact_publisher = self.create_publisher(String, '/selected_artifact', 10)
 
+        # Publishes Go To destination to navigation_node via /artifact_goto
+        self.goto_publisher = self.create_publisher(String, '/artifact_goto', 10)
+
         # IMPROVEMENT 1: Separate publisher for info-only requests
         self.artifact_info_publisher = self.create_publisher(String, '/artifact_info_request', 10)
 

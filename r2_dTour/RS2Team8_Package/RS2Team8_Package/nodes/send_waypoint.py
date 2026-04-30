@@ -2,11 +2,16 @@
 """
 RS2 Team 8 - Quick waypoint sender for testing navigation.py
 Usage:
-    python3 send_waypoint.py artifact_1
-    python3 send_waypoint.py toilets
-    python3 send_waypoint.py home
-    python3 send_waypoint.py cancel
-    python3 send_waypoint.py pose 2.5 -1.0 90   # x y yaw_degrees
+    ros2 run RS2Team8_Package send_waypoint artifact_1
+    ros2 run RS2Team8_Package send_waypoint artifact_2
+    ros2 run RS2Team8_Package send_waypoint artifact_3
+    ros2 run RS2Team8_Package send_waypoint artifact_4
+    ros2 run RS2Team8_Package send_waypoint toilets
+    ros2 run RS2Team8_Package send_waypoint fire_exit_1
+    ros2 run RS2Team8_Package send_waypoint fire_exit_2
+    ros2 run RS2Team8_Package send_waypoint home
+    ros2 run RS2Team8_Package send_waypoint cancel
+    ros2 run RS2Team8_Package send_waypoint pose 2.5 -1.0 90   # x y yaw_degrees
 """
 
 import sys

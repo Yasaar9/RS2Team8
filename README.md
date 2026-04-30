@@ -37,38 +37,29 @@ ln -s ~/git/RS2Team8/r2_dTour
 cd ~/turtlebot3_ws
 colcon build --symlink-install --cmake-args -Wno-dev
 echo 'source ~/turtlebot3_ws/install/setup.bash' >> ~/.bashrc
-source ~/.bashrc
-
-echo 'export ROS_DOMAIN_ID=30 #TURTLEBOT3' >> ~/.bashrc
+echo 'export ROS_DOMAIN_ID=71 #TURTLEBOT3' >> ~/.bashrc
 echo 'source /usr/share/gazebo/setup.sh' >> ~/.bashrc
 echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
-source ~/.bashrc
 
+
+On any new terminal:
+source ~/.bashrc
 
 ## Rebuild fresh
 
 cd ~/turtlebot3_ws
 rm -rf build install log
 colcon build --symlink-install --cmake-args -Wno-dev
-source ~/.bashrc
 
 ## Run Simulation
 
-### Permanently Select Turtlebot Model
+### Permanently Select Turtlebot Model (do once)
 
 echo "export TURTLEBOT3_MODEL=waffle_pi" >> ~/.bashrc
-
-### Empty World
-
-ros2 launch turtlebot3_gazebo empty_world.launch.py
 
 ### World
 
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
-
-### House
-
-ros2 launch turtlebot3_gazebo turtlebot3_house.launch.py
 
 ### Start Nav2
 
@@ -85,6 +76,61 @@ ros2 run RS2Team8_Package navigation_node
 ### Start Ui Node
 
 ros2 run RS2Team8_Package ui_node
+
+## Connect to real turtlebot
+
+### Setup
+
+Connect to turtle bot wifi.
+
+Set up one time:
+export ROS_DOMAIN_ID=<your_domain_id>
+export TURTLEBOT3_MODEL=waffle_pi
+
+Set up permanent:
+echo 'export ROS_DOMAIN_ID=<your_domain_id>' >> ~/.bashrc
+echo 'export TURTLEBOT3_MODEL=waffle_pi' >> ~/.bashrc
+
+SSH:
+ssh ubuntu@192.168.0.2XX
+password:turtlebot
+
+Edit bash:
+nano ~/.bashrc
+
+Add to bash (if not there already):
+export TURTLEBOT3_MODEL=waffle_pi
+export ROS_DOMAIN_ID=<your_domain_id>
+
+On any new terminal:
+source ~/.bashrc
+
+### Each tutlebot node
+
+Start turtlebot program on new ssh terminal:
+ros2 launch turtlebot3_bringup robot.launch.py
+
+Teleop on new ssh terminal:
+ros2 run turtlebot3_teleop teleop_keyboard
+
+Camera setup on local terminal:
+ros2 run camera_ros camera_node --ros-args -p format:=MJPEG
+
+Camera on new ssh terminal:
+ros2 run camera_ros camera_node --ros-args -p format:=MJPEG
+
+Camera on new local terminal:
+ros2 run image_tools showimage --ros-args -r image:=/camera/image_raw
+
+### Build map
+
+Cartographer on new local terminal:
+ros2 launch turtlebot3_cartographer cartographer.launch.py use_sim_time:=false
+
+Drive around
+
+Save map on new local terminal:
+ros2 run nav2_map_server map_saver_cli -f ~/git/RS2Team8/r2_dTour/0_maps
 
 
 ## FOLDER STRUCTURE
@@ -108,7 +154,7 @@ ros2 run RS2Team8_Package ui_node
         │   └── params/            ← .yaml parameter files
         ├── worlds/                ← .world Gazebo world files
         ├── urdf/                  ← Robot description files
-        └── RS2Team8_Package/        ← Python module
+        └── RS2Team8_Package/
             ├── __init__.py
             └── nodes/             ← Your ROS nodes
 
