@@ -14,74 +14,49 @@ Topics consumed:
   /artifact_goto              (std_msgs/String)           — UI "Go To" button
 
 Topics published:
-  /navigation/status           (std_msgs/String) — "IDLE"|"NAVIGATING"|"OBSTACLE"|"REACHED"|"FAILED"
+  /navigation/status           (std_msgs/String) — "IDLE"|"ROTATING"|"NAVIGATING"|"OBSTACLE"|"REACHED"|"FAILED"
   /navigation/waypoint_reached (std_msgs/Bool)   — True when goal is reached
   /navigation_status           (std_msgs/String) — mirror of above for UI node
 
 Debug output (every 3 s):
   [DEBUG] odom=(...) amcl=(...) source=amcl|odom  amcl_age=...s
   [DEBUG] obstacle: forward_min=...m  blocked=True/False
+
+Waypoints are loaded from waypoints.ini at startup (same directory as this
+file). Set [active] -> map in that file to switch between simulation and
+real-robot maps without touching this file.
 """
 
-import rclpy
-from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
-from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-
-from std_msgs.msg import String, Bool
-from geometry_msgs.msg import PoseStamped, Twist
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
-
-import threading
+import configparser
 import math
+import os
+import threading
 import time
 
-
-# ===========================================================================
-# INITIAL POSE CONFIGURATION
-# Update once the gallery map is finalised.
-# ===========================================================================
-INITIAL_POSE_X   = 0.0
-INITIAL_POSE_Y   = 0.0
-INITIAL_POSE_YAW = 0.0
-# ===========================================================================
-
-
-# ===========================================================================
-# WAYPOINT CONFIGURATION  —  "name": (x, y, yaw_degrees)
-# Positions measured using a 0.5m radius cylinder in Gazebo world frame,
-# then converted to map frame by adding the spawn offset:
-#   map_x = world_x + 2.0  (spawn is at world -2.0, map 0.0)
-#   map_y = world_y + 0.5  (spawn is at world -0.5, map 0.0)
-# Yaw set so robot faces point of interest on arrival.
-# ROS yaw convention: 0=East(+X), 90=North(+Y), 180=West, -90=South(-Y)
-# ===========================================================================
-WAYPOINTS = {
-    "home":        ( 0.000,  0.000,    0.0),
-    "artifact_1":  ( 1.029,  2.240, -135.0),  # faces SW toward artifact
-    "artifact_2":  ( 2.963,  2.253,  135.0),  # faces NW toward artifact
-    "artifact_3":  ( 2.950, -1.261,   45.0),  # faces NE toward artifact
-    "artifact_4":  ( 1.030, -1.237,  -45.0),  # faces SE toward artifact
-    "toilets":     ( 3.819,  0.485,   90.0),  # faces North toward toilets
-    "fire_exit_1": ( 1.994,  2.502,  180.0),  # faces West toward exit
-    "fire_exit_2": ( 1.987, -1.528,    0.0),  # faces East toward exit
-}
-# ===========================================================================
+import rclpy
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav_msgs.msg import Odometry
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool, String
 
 
 # ===========================================================================
-# FIRE EXIT LIST — used by nearest fire exit logic.
-# Add any additional fire exit waypoint names here.
+# WAYPOINTS CONFIG PATH
+# Resolved relative to this source file so it works regardless of the
+# working directory when the node is launched.
 # ===========================================================================
-FIRE_EXITS = ["fire_exit_1", "fire_exit_2"]
-# ===========================================================================
+_THIS_DIR    = os.path.dirname(os.path.abspath(__file__))
+WAYPOINTS_FILE = os.path.join(_THIS_DIR, "waypoints.ini")
 
 
 # ===========================================================================
 # UI LABEL -> WAYPOINT NAME MAP
-# Maps the display names from the UI "Go To" buttons to WAYPOINTS keys above.
+# Maps the display names from the UI "Go To" buttons to waypoint keys.
+# "nearest_fire_exit" is resolved dynamically at runtime using any waypoint
+# whose name starts with "fire_exit".
 # ===========================================================================
 UI_TO_WAYPOINT = {
     "modern art":          "artifact_1",
@@ -89,9 +64,8 @@ UI_TO_WAYPOINT = {
     "portrait":            "artifact_3",
     "historical artefact": "artifact_4",
     "toilet":              "toilets",
-    "fire exit":           "nearest_fire_exit",   # resolved dynamically at runtime
+    "fire exit":           "nearest_fire_exit",
 }
-# ===========================================================================
 
 
 # ===========================================================================
@@ -103,7 +77,28 @@ UI_TO_WAYPOINT = {
 #   not Euclidean distance, and never converges on TurtleBot3 + RPP.
 # ===========================================================================
 XY_ARRIVAL_THRESHOLD = 0.15   # metres
+
+
 # ===========================================================================
+# ROTATE-FIRST CONFIGURATION
+#
+# Before handing a goal to Nav2, the node checks whether the robot is already
+# facing roughly the right direction. If the angular error to the goal exceeds
+# ROTATE_THRESHOLD_DEG, the node spins the robot in-place using /cmd_vel until
+# it is within ROTATE_TOLERANCE_DEG, then proceeds with Nav2.
+#
+# This prevents the robot from driving forward into a wall when it arrives at
+# a waypoint facing away from the next goal.
+#
+# ROTATE_SPEED_RAD  — angular velocity (rad/s) during the pre-rotation.
+#                     Keep below the controller's max_angular_accel limit.
+# ROTATE_TIMEOUT_S  — safety cap; gives up if rotation takes longer than this
+#                     (e.g. if IMU/odom is stale) and proceeds anyway.
+# ===========================================================================
+ROTATE_THRESHOLD_DEG  = 45.0   # degrees — rotate first if error exceeds this
+ROTATE_TOLERANCE_DEG  = 10.0   # degrees — stop rotating when within this
+ROTATE_SPEED_RAD      = 0.6    # rad/s
+ROTATE_TIMEOUT_S      = 10.0   # seconds — give up and proceed if exceeded
 
 
 # ===========================================================================
@@ -118,32 +113,43 @@ XY_ARRIVAL_THRESHOLD = 0.15   # metres
 # OBSTACLE_ARC_DEG    — total forward arc (degrees) scanned for obstacles.
 #   60 deg total (+/- 30 deg) covers the robot's travel corridor.
 # ===========================================================================
-OBSTACLE_STOP_DIST  = 0.35   # metres  (D-grade: emergency stop within 0.5m)
-OBSTACLE_CLEAR_DIST = 0.5  # metres  (slightly larger for hysteresis)
-OBSTACLE_ARC_DEG    = 60    # degrees total forward arc
-# ===========================================================================
+OBSTACLE_STOP_DIST  = 0.5    # metres  (D-grade: emergency stop within 0.5m)
+OBSTACLE_CLEAR_DIST = 0.6    # metres  (slightly larger for hysteresis)
+OBSTACLE_ARC_DEG    = 60     # degrees total forward arc
 
 
 # ===========================================================================
 # DEBUG CONFIGURATION
 #
-# DEBUG_POSE     — logs coordinate comparison (odom vs amcl) every
-#                  DEBUG_INTERVAL_SEC seconds.
-# DEBUG_OBSTACLE — logs forward scan min distance every DEBUG_INTERVAL_SEC
-#                  seconds so you can verify obstacle detection is reading
-#                  the right values before an object is placed.
-#
-# Set both to False for real-robot deployment.
+# Set both to False for the final real-robot demonstration.
 # ===========================================================================
 DEBUG_POSE         = True
 DEBUG_OBSTACLE     = True
 DEBUG_INTERVAL_SEC = 3.0
-# ===========================================================================
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def yaw_to_quaternion(yaw_deg: float) -> tuple:
     yaw = math.radians(yaw_deg)
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def quaternion_to_yaw(qz: float, qw: float) -> float:
+    """Extract yaw (radians) from a quaternion (z, w components only for 2-D)."""
+    return math.atan2(2.0 * qw * qz, 1.0 - 2.0 * qz * qz)
+
+
+def angle_diff(a: float, b: float) -> float:
+    """Signed angular difference a - b, wrapped to [-pi, pi]."""
+    diff = a - b
+    while diff >  math.pi:
+        diff -= 2.0 * math.pi
+    while diff < -math.pi:
+        diff += 2.0 * math.pi
+    return diff
 
 
 def make_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
@@ -160,17 +166,100 @@ def make_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
     return pose
 
 
+# ---------------------------------------------------------------------------
+# Waypoint loader
+# ---------------------------------------------------------------------------
+
+def load_waypoints(filepath: str) -> tuple[dict, list, tuple, str]:
+    """
+    Parse waypoints.ini and return:
+      waypoints      : dict[name -> (x, y, yaw_deg)]
+      fire_exits     : list of waypoint names starting with "fire_exit"
+      initial_pose   : (x, y, yaw_deg)
+      active_map     : name of the loaded map section (for logging)
+
+    Raises FileNotFoundError if the file is missing, or ValueError if the
+    [active] section or referenced map section is absent.
+    """
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(
+            f"Waypoints file not found: {filepath}\n"
+            f"Expected alongside navigation.py at: {_THIS_DIR}"
+        )
+
+    cfg = configparser.ConfigParser()
+    cfg.read(filepath)
+
+    if "active" not in cfg or "map" not in cfg["active"]:
+        raise ValueError(
+            "waypoints.ini must contain an [active] section with a 'map' key."
+        )
+
+    active_map = cfg["active"]["map"].strip()
+
+    if active_map not in cfg:
+        raise ValueError(
+            f"waypoints.ini: active map '{active_map}' has no matching section."
+        )
+
+    waypoints: dict = {}
+    for name, value in cfg[active_map].items():
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) != 3:
+            raise ValueError(
+                f"waypoints.ini [{active_map}] '{name}': "
+                f"expected 'x, y, yaw_deg', got '{value}'"
+            )
+        waypoints[name] = (float(parts[0]), float(parts[1]), float(parts[2]))
+
+    fire_exits = [n for n in waypoints if n.startswith("fire_exit")]
+
+    # Initial pose (optional section; defaults to 0,0,0)
+    pose_section = f"{active_map}_initial_pose"
+    if pose_section in cfg:
+        ip = cfg[pose_section]
+        initial_pose = (
+            float(ip.get("x",   0.0)),
+            float(ip.get("y",   0.0)),
+            float(ip.get("yaw", 0.0)),
+        )
+    else:
+        initial_pose = (0.0, 0.0, 0.0)
+
+    return waypoints, fire_exits, initial_pose, active_map
+
+
+# ===========================================================================
+# NavigationNode
+# ===========================================================================
+
 class NavigationNode(Node):
 
     def __init__(self):
         super().__init__("navigation_node")
+
+        # ── Load waypoints from config ────────────────────────────────────────
+        try:
+            self.WAYPOINTS, self.FIRE_EXITS, initial_pose_cfg, active_map = \
+                load_waypoints(WAYPOINTS_FILE)
+            self.get_logger().info(
+                f"Loaded {len(self.WAYPOINTS)} waypoints from map '{active_map}' "
+                f"({WAYPOINTS_FILE})"
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            self.get_logger().fatal(f"Failed to load waypoints: {exc}")
+            raise SystemExit(1) from exc
+
+        self._initial_pose_x   = initial_pose_cfg[0]
+        self._initial_pose_y   = initial_pose_cfg[1]
+        self._initial_pose_yaw = initial_pose_cfg[2]
 
         self.navigator = BasicNavigator()
         self._set_initial_pose()
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.status_pub    = self.create_publisher(String, "/navigation/status",       10)
-        self.ui_status_pub = self.create_publisher(String, "/navigation_status",       10)  # UI mirror
+        self.ui_status_pub = self.create_publisher(String, "/navigation_status",       10)
         self.reached_pub   = self.create_publisher(Bool,   "/navigation/waypoint_reached", 10)
         self.cmd_vel_pub   = self.create_publisher(Twist,  "/cmd_vel",                 10)
 
@@ -180,21 +269,15 @@ class NavigationNode(Node):
         self.create_subscription(String,      "/navigation/cancel",         self._cancel_callback,        10)
         self.create_subscription(String,      "/artifact_goto",             self._ui_goto_callback,       10)
 
-        # ── Pose tracking ────────────────────────────────────────────────────
-        # Strategy: AMCL is the primary source (map frame, globally consistent).
-        # Odom is only used at startup BEFORE AMCL has ever published.
-        # Once AMCL publishes even once, we freeze on the last known AMCL value
-        # rather than falling back to drifting odom near the goal — odom error
-        # near the goal exceeds XY_ARRIVAL_THRESHOLD and causes false misses.
+        # ── Pose tracking (XY) ───────────────────────────────────────────────
+        # AMCL is primary. Odom is used only before AMCL has ever published.
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._pose_lock = threading.Lock()
 
-        # Track whether AMCL has ever published (not just recency)
         self._amcl_ever_received: bool = False
         self._last_amcl_time: float    = 0.0
 
-        # Separate stores for debug comparison
         self._odom_x: float = 0.0
         self._odom_y: float = 0.0
         self._odom_lock = threading.Lock()
@@ -203,22 +286,22 @@ class NavigationNode(Node):
         self._amcl_y: float = 0.0
         self._amcl_lock = threading.Lock()
 
+        # ── Heading tracking (yaw) ───────────────────────────────────────────
+        # Yaw is always sourced from /odom (always available, good enough for
+        # in-place rotation which is short-duration and low-drift).
+        self._robot_yaw: float = 0.0   # radians, updated from odom
+        self._yaw_lock = threading.Lock()
+
         self.create_subscription(
-            PoseWithCovarianceStamped,
-            "/amcl_pose",
-            self._amcl_pose_callback,
-            10,
+            PoseWithCovarianceStamped, "/amcl_pose", self._amcl_pose_callback, 10
         )
         self.create_subscription(
-            Odometry,
-            "/odom",
-            self._odom_callback,
-            10,
+            Odometry, "/odom", self._odom_callback, 10
         )
 
         # ── Obstacle detection ───────────────────────────────────────────────
-        self._obstacle_blocked: bool    = False
-        self._obstacle_min_dist: float  = float("inf")  # for debug
+        self._obstacle_blocked: bool   = False
+        self._obstacle_min_dist: float = float("inf")
         self._scan_lock = threading.Lock()
         self.create_subscription(LaserScan, "/scan", self._scan_callback, 10)
 
@@ -236,7 +319,7 @@ class NavigationNode(Node):
         self.navigator.waitUntilNav2Active()
         self.get_logger().info("Nav2 is active — ready to navigate.")
 
-    # ── Pose tracking ────────────────────────────────────────────────────────
+    # ── Pose / yaw tracking ──────────────────────────────────────────────────
 
     def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
         x = msg.pose.pose.position.x
@@ -244,7 +327,6 @@ class NavigationNode(Node):
         with self._amcl_lock:
             self._amcl_x = x
             self._amcl_y = y
-        # Always update active pose from AMCL — it is the authoritative source
         with self._pose_lock:
             self._robot_x = x
             self._robot_y = y
@@ -254,16 +336,26 @@ class NavigationNode(Node):
     def _odom_callback(self, msg: Odometry):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
+        qz = msg.pose.pose.orientation.z
+        qw = msg.pose.pose.orientation.w
+
         with self._odom_lock:
             self._odom_x = x
             self._odom_y = y
-        # Only promote odom to active source before AMCL has ever published.
-        # After the first AMCL message we freeze on last known AMCL value —
-        # never replace it with drifting odom, even if AMCL goes quiet.
+
+        # Always update yaw from odom — used for rotate-first logic
+        with self._yaw_lock:
+            self._robot_yaw = quaternion_to_yaw(qz, qw)
+
+        # XY position: odom is only promoted before AMCL has ever published
         if not self._amcl_ever_received:
             with self._pose_lock:
                 self._robot_x = x
                 self._robot_y = y
+
+    def _get_robot_yaw(self) -> float:
+        with self._yaw_lock:
+            return self._robot_yaw
 
     def _distance_to_goal(self, goal_x: float, goal_y: float) -> float:
         with self._pose_lock:
@@ -281,11 +373,11 @@ class NavigationNode(Node):
                 ax, ay = self._amcl_x, self._amcl_y
             with self._pose_lock:
                 rx, ry = self._robot_x, self._robot_y
+            with self._yaw_lock:
+                yaw_deg = math.degrees(self._robot_yaw)
 
-            amcl_age = time.time() - self._last_amcl_time if self._amcl_ever_received else float("inf")
-            source   = "amcl" if self._amcl_ever_received else "odom(pre-amcl)"
-
-            # Warn if odom and amcl are far apart — indicates localisation drift
+            amcl_age     = time.time() - self._last_amcl_time if self._amcl_ever_received else float("inf")
+            source       = "amcl" if self._amcl_ever_received else "odom(pre-amcl)"
             odom_amcl_err = math.hypot(ox - ax, oy - ay) if self._amcl_ever_received else float("nan")
             err_str = f"{odom_amcl_err:.3f} m"
             if self._amcl_ever_received and odom_amcl_err > 0.5:
@@ -293,9 +385,10 @@ class NavigationNode(Node):
 
             self.get_logger().info(
                 f"\n[DEBUG POSE]"
-                f"\n  odom   : ({ox:+.3f}, {oy:+.3f})  (odom frame — drifts)"
-                f"\n  amcl   : ({ax:+.3f}, {ay:+.3f})  (map frame  — used for nav)"
+                f"\n  odom   : ({ox:+.3f}, {oy:+.3f})  (drifts)"
+                f"\n  amcl   : ({ax:+.3f}, {ay:+.3f})  (map frame)"
                 f"\n  active : {source} -> ({rx:+.3f}, {ry:+.3f})"
+                f"\n  yaw    : {yaw_deg:+.1f} deg  (from odom)"
                 f"\n  amcl age : {amcl_age:.1f} s"
                 f"\n  odom/amcl error : {err_str}"
             )
@@ -314,15 +407,13 @@ class NavigationNode(Node):
 
     def _scan_callback(self, msg: LaserScan):
         """
-        Check the forward arc of the laser scan for obstacles.
-
-        TurtleBot3 waffle_pi LaserScan: 360 readings, index 0 = directly
-        forward, increasing counter-clockwise. We check +/- 30 deg (60 deg
-        total) around index 0.
-
-        Uses hysteresis: stops at OBSTACLE_STOP_DIST, resumes only when
-        clear beyond OBSTACLE_CLEAR_DIST to prevent rapid toggling.
+        Check the forward arc for obstacles. Skip during rotate-first phase
+        (the arc would see the wall the robot is turning away from).
+        TurtleBot3 waffle_pi: 360 readings, index 0 = forward, CCW increasing.
         """
+        if self._rotating:
+            return
+
         num = len(msg.ranges)
         if num == 0:
             return
@@ -366,9 +457,9 @@ class NavigationNode(Node):
         initial_pose = PoseStamped()
         initial_pose.header.frame_id = "map"
         initial_pose.header.stamp    = self.get_clock().now().to_msg()
-        qx, qy, qz, qw = yaw_to_quaternion(INITIAL_POSE_YAW)
-        initial_pose.pose.position.x    = INITIAL_POSE_X
-        initial_pose.pose.position.y    = INITIAL_POSE_Y
+        qx, qy, qz, qw = yaw_to_quaternion(self._initial_pose_yaw)
+        initial_pose.pose.position.x    = self._initial_pose_x
+        initial_pose.pose.position.y    = self._initial_pose_y
         initial_pose.pose.position.z    = 0.0
         initial_pose.pose.orientation.x = qx
         initial_pose.pose.orientation.y = qy
@@ -376,20 +467,21 @@ class NavigationNode(Node):
         initial_pose.pose.orientation.w = qw
         self.navigator.setInitialPose(initial_pose)
         self.get_logger().info(
-            f"Initial pose set: ({INITIAL_POSE_X}, {INITIAL_POSE_Y}, {INITIAL_POSE_YAW}°)"
+            f"Initial pose set: ({self._initial_pose_x}, {self._initial_pose_y}, "
+            f"{self._initial_pose_yaw}°)"
         )
 
     # ── Subscriber callbacks ─────────────────────────────────────────────────
 
     def _waypoint_name_callback(self, msg: String):
         name = msg.data.strip().lower()
-        if name not in WAYPOINTS:
+        if name not in self.WAYPOINTS:
             self.get_logger().warn(
-                f"Unknown waypoint '{name}'. Available: {list(WAYPOINTS.keys())}"
+                f"Unknown waypoint '{name}'. Available: {list(self.WAYPOINTS.keys())}"
             )
             return
-        x, y, yaw = WAYPOINTS[name]
-        self.get_logger().info(f"Received waypoint: '{name}' -> ({x}, {y}, {yaw}deg)")
+        x, y, yaw = self.WAYPOINTS[name]
+        self.get_logger().info(f"Received waypoint: '{name}' -> ({x}, {y}, {yaw}°)")
         self._navigate_to(make_pose(x, y, yaw), label=name, goal_x=x, goal_y=y)
 
     def _pose_callback(self, msg: PoseStamped):
@@ -404,24 +496,20 @@ class NavigationNode(Node):
         self.navigator.cancelTask()
         self._stop_robot()
         self._navigating = False
+        self._rotating   = False
         self._publish_status("IDLE")
 
     def _nearest_fire_exit(self) -> str:
-        """
-        Returns the name of the closest fire exit waypoint to the robot's
-        current AMCL position. Compares straight-line distance to all entries
-        in FIRE_EXITS and returns the nearest one.
-        """
         with self._pose_lock:
             rx, ry = self._robot_x, self._robot_y
 
-        best_name = FIRE_EXITS[0]
+        best_name = self.FIRE_EXITS[0]
         best_dist = float("inf")
-        for name in FIRE_EXITS:
-            ex, ey, _ = WAYPOINTS[name]
+        for name in self.FIRE_EXITS:
+            ex, ey, _ = self.WAYPOINTS[name]
             dist = math.hypot(rx - ex, ry - ey)
             self.get_logger().info(
-                f"[FIRE EXIT] {name}: distance={dist:.2f} m from robot ({rx:.2f}, {ry:.2f})"
+                f"[FIRE EXIT] {name}: {dist:.2f} m from robot ({rx:.2f}, {ry:.2f})"
             )
             if dist < best_dist:
                 best_dist = dist
@@ -431,22 +519,23 @@ class NavigationNode(Node):
         return best_name
 
     def _ui_goto_callback(self, msg: String):
-        """Receives 'Go To' button presses from the UI and maps to waypoints."""
         label    = msg.data.strip().lower()
         waypoint = UI_TO_WAYPOINT.get(label)
         if waypoint is None:
             self.get_logger().warn(
                 f"[UI] No waypoint mapped for '{label}'. "
-                f"Available UI labels: {list(UI_TO_WAYPOINT.keys())}"
+                f"Available: {list(UI_TO_WAYPOINT.keys())}"
             )
             return
 
-        # Resolve nearest fire exit dynamically at request time
         if waypoint == "nearest_fire_exit":
+            if not self.FIRE_EXITS:
+                self.get_logger().warn("[UI] No fire exit waypoints defined.")
+                return
             waypoint = self._nearest_fire_exit()
 
         self.get_logger().info(f"[UI] Go To '{label}' -> waypoint '{waypoint}'")
-        x, y, yaw = WAYPOINTS[waypoint]
+        x, y, yaw = self.WAYPOINTS[waypoint]
         self._navigate_to(make_pose(x, y, yaw), label=waypoint, goal_x=x, goal_y=y)
 
     # ── Navigation logic ─────────────────────────────────────────────────────
@@ -459,6 +548,7 @@ class NavigationNode(Node):
 
         pose.header.stamp = self.get_clock().now().to_msg()
         self._navigating  = True
+        self._rotating    = False
         self._nav_thread  = threading.Thread(
             target=self._navigation_thread,
             args=(pose, label, goal_x, goal_y),
@@ -466,27 +556,119 @@ class NavigationNode(Node):
         )
         self._nav_thread.start()
 
+    def _rotate_to_face_goal(self, goal_x: float, goal_y: float, label: str) -> bool:
+        """
+        Spin the robot in-place until it faces the goal direction.
+
+        Returns True if rotation completed (or was unnecessary).
+        Returns False if cancelled externally or timed out badly.
+
+        Steps:
+          1. Compute bearing to goal from current position.
+          2. Compute angular error = bearing - current yaw.
+          3. If error < ROTATE_THRESHOLD_DEG, skip rotation entirely.
+          4. Otherwise publish /cmd_vel angular commands until within
+             ROTATE_TOLERANCE_DEG or ROTATE_TIMEOUT_S is reached.
+        """
+        with self._pose_lock:
+            rx, ry = self._robot_x, self._robot_y
+
+        bearing_rad = math.atan2(goal_y - ry, goal_x - rx)
+        current_yaw = self._get_robot_yaw()
+        error_rad   = angle_diff(bearing_rad, current_yaw)
+        error_deg   = math.degrees(abs(error_rad))
+
+        if error_deg <= ROTATE_THRESHOLD_DEG:
+            self.get_logger().info(
+                f"[ROTATE] '{label}': heading error {error_deg:.1f}° — within threshold, "
+                f"skipping pre-rotation."
+            )
+            return True
+
+        self.get_logger().info(
+            f"[ROTATE] '{label}': heading error {error_deg:.1f}° — rotating to face goal "
+            f"(bearing {math.degrees(bearing_rad):.1f}°)."
+        )
+        self._publish_status("ROTATING")
+        self._rotating = True
+
+        start_time = time.time()
+        cmd = Twist()
+
+        while True:
+            if not self._navigating:
+                # Cancelled externally
+                self._stop_robot()
+                self._rotating = False
+                return False
+
+            if time.time() - start_time > ROTATE_TIMEOUT_S:
+                self.get_logger().warn(
+                    f"[ROTATE] '{label}': rotation timed out after {ROTATE_TIMEOUT_S}s — "
+                    f"proceeding anyway."
+                )
+                break
+
+            current_yaw = self._get_robot_yaw()
+            error_rad   = angle_diff(bearing_rad, current_yaw)
+            error_deg   = math.degrees(abs(error_rad))
+
+            if error_deg <= ROTATE_TOLERANCE_DEG:
+                self.get_logger().info(
+                    f"[ROTATE] '{label}': facing goal ({error_deg:.1f}° error) — done."
+                )
+                break
+
+            # Spin toward goal — sign of error_rad determines CW vs CCW
+            cmd.angular.z = math.copysign(ROTATE_SPEED_RAD, error_rad)
+            cmd.linear.x  = 0.0
+            self.cmd_vel_pub.publish(cmd)
+            time.sleep(0.05)
+
+        self._stop_robot()
+        self._rotating = False
+        time.sleep(0.1)   # brief settle before Nav2 takes over
+        return True
+
     def _navigation_thread(self, pose: PoseStamped, label: str, goal_x: float, goal_y: float):
         """
-        Background thread. Sends the Nav2 goal then polls AMCL pose until the
-        robot is within XY_ARRIVAL_THRESHOLD, then cancels and declares REACHED.
+        Background thread.
+
+        Phase 1 — Rotate-first:
+          If the robot is facing more than ROTATE_THRESHOLD_DEG away from the
+          goal, spin in-place until facing it. This prevents driving forward
+          into a wall when transitioning between waypoints on opposite sides
+          of the map.
+
+        Phase 2 — Nav2 navigation:
+          Sends the goal to Nav2 (goToPose) and polls AMCL pose until within
+          XY_ARRIVAL_THRESHOLD, then cancels and declares REACHED.
 
         Pose source:
-          - Before first AMCL message: uses raw odom (startup only)
-          - After first AMCL message:  always uses last known AMCL value,
-            even if AMCL goes quiet near the goal. Never falls back to odom
-            once AMCL has been received — odom drift exceeds arrival threshold.
+          - Before first AMCL message: raw odom (startup only).
+          - After first AMCL message:  last known AMCL, never reverts to odom.
 
         Obstacle behaviour:
-          - When blocked: holds zero velocity, Nav2 keeps the goal active.
-          - When cleared: resumes — Nav2 takes back control immediately.
+          - When blocked: holds zero velocity, Nav2 goal stays active.
+          - When cleared: resumes.
         """
+
+        # ── Phase 1: rotate to face the goal ─────────────────────────────────
+        ok = self._rotate_to_face_goal(goal_x, goal_y, label)
+        if not ok:
+            # Cancelled during rotation
+            self._navigating = False
+            self._publish_status("IDLE")
+            return
+
+        # ── Phase 2: Nav2 navigation ──────────────────────────────────────────
         self._publish_status("NAVIGATING")
         self.get_logger().info(f"[NAV] Navigating to '{label}' at ({goal_x}, {goal_y})...")
 
+        pose.header.stamp = self.get_clock().now().to_msg()
         self.navigator.goToPose(pose)
 
-        retry_count   = 2   # number of re-attempts if Nav2 fails
+        retry_count   = 2
         last_log_time = 0.0
 
         while True:
@@ -526,7 +708,7 @@ class NavigationNode(Node):
                 self._publish_reached(True)
                 return
 
-            # ── Nav2 failure check (secondary) ───────────────────────────
+            # ── Nav2 failure / success check (secondary) ──────────────────
             if self.navigator.isTaskComplete():
                 result = self.navigator.getResult()
                 if result == TaskResult.SUCCEEDED:
@@ -543,7 +725,7 @@ class NavigationNode(Node):
                     )
                     if retry_count > 0:
                         self.get_logger().warn(
-                            f"[NAV] '{label}': Retrying ({retry_count} attempt(s) left)..."
+                            f"[NAV] '{label}': Retrying ({retry_count} left)..."
                         )
                         self._stop_robot()
                         time.sleep(0.5)
@@ -565,6 +747,11 @@ class NavigationNode(Node):
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
+    # _rotating is checked by _scan_callback to suppress obstacle detection
+    # while the robot is spinning (otherwise the forward-arc may see the wall
+    # the robot is turning away from and false-trigger the emergency stop).
+    _rotating: bool = False
+
     def _stop_robot(self):
         """Publish a zero-velocity Twist to halt the robot immediately."""
         self.cmd_vel_pub.publish(Twist())
@@ -573,7 +760,7 @@ class NavigationNode(Node):
         msg = String()
         msg.data = status
         self.status_pub.publish(msg)
-        self.ui_status_pub.publish(msg)   # mirror to /navigation_status for UI
+        self.ui_status_pub.publish(msg)
 
     def _publish_reached(self, reached: bool):
         msg = Bool()

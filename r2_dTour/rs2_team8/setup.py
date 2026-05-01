@@ -32,3 +32,11 @@ setup(
         ],
     },
 )
+
+# NOTE: waypoints.ini lives alongside navigation.py in the source tree at
+#   rs2_team8/nodes/waypoints.ini
+# The navigation node resolves the path relative to its own __file__ at
+# runtime, so it reads the source file directly whether you use
+# --symlink-install or not. No install-time copying is needed.
+# When deploying to the real robot, copy the whole rs2_team8/ folder as-is
+# and the ini file travels with the code.
