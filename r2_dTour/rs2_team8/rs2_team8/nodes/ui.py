@@ -269,18 +269,22 @@ class GreetingNode(Node):
         status = msg.data.strip()
         self.get_logger().info(f'Navigation status received: {status}')
         self.app.set_nav_status(status)
-        # Sync the main status LED with navigation state
+        # Sync the main status LED with navigation state.
+        # Maps every status published by navigation_node to a UI display state.
         status_map = {
-            'NAVIGATING': 'Navigating',
-            'OBSTACLE':   'Navigating',   # still en-route, just paused
-            'REACHED':    'Listening',
-            'FAILED':     'Error',
             'IDLE':       'Listening',
+            'ROTATING':   'Navigating',   # pre-rotation before Nav2 takes over
+            'NAVIGATING': 'Navigating',
+            'OBSTACLE':   'Navigating',   # still en-route, holding for obstacle
+            'REROUTING':  'Rerouting',    # unstuck manoeuvre in progress
+            'STUCK':      'Error',        # unstuck failed — no clear direction
+            'FAILED':     'Error',
+            'REACHED':    'Listening',
         }
         if status in status_map:
             self.app.set_status(status_map[status])
-        # Re-enable buttons once navigation is done
-        if status in ('REACHED', 'FAILED', 'IDLE'):
+        # Re-enable buttons once navigation is fully done
+        if status in ('REACHED', 'FAILED', 'STUCK', 'IDLE'):
             self.is_busy = False
             self.app.set_buttons_enabled(True)
 
@@ -865,6 +869,7 @@ class GreetingApp:
                 'Speaking':   'orange',
                 'Processing': 'blue',
                 'Navigating': 'purple',
+                'Rerouting':  '#e65c00',   # amber — unstuck manoeuvre in progress
                 'Error':      'red',
             }
             color = color_map.get(status, 'gray')

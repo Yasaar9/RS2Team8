@@ -68,7 +68,7 @@ ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
 
 ros2 launch turtlebot3_navigation2 navigation2.launch.py \
-  map:=$HOME/git/RS2Team8/r2_dTour/0_maps/map.yaml \
+  map:=$HOME/git/RS2Team8/r2_dTour/0_maps/simulation_map.yaml \
   params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 
 ### Start Navigation node
@@ -126,16 +126,10 @@ ros2 run image_tools showimage --ros-args -r image:=/camera/image_raw
 
 ### Build map
 
-Cartographer on new local terminal:
-ros2 launch turtlebot3_cartographer cartographer.launch.py use_sim_time:=false
-
-Drive around
-
-Save map on new local terminal:
-ros2 run nav2_map_server map_saver_cli -f ~/git/RS2Team8/r2_dTour/0_maps
+Instructions to map gallery to RS2Team8/r2_dTour/0_maps with file name "gallery_map.yaml"
 
 
-## FOLDER STRUCTURE
+## FOLDER STRUCTUREs
 ================================================================================
 
 ~/git/RS2Team8/                    ← Git repository (commit/push from here)
