@@ -140,6 +140,20 @@ OBSTACLE_ARC_DEG    = 60     # degrees
 
 
 # ===========================================================================
+# OBSTACLE HOLD TIMEOUT
+#
+# If the path does not clear within this many seconds after an emergency stop,
+# the node escalates directly to the unstuck manoeuvre rather than waiting
+# forever. This is the primary trigger for unstuck when the robot is physically
+# wedged against an obstacle (the path will never clear on its own).
+#
+# 8 s is long enough to let a person walk past but short enough to recover
+# before a demonstration audience loses patience.
+# ===========================================================================
+OBSTACLE_HOLD_TIMEOUT_S = 8.0   # seconds before escalating to unstuck
+
+
+# ===========================================================================
 # UNSTUCK CONFIGURATION
 #
 # When Nav2 fails after all retries (robot is wedged), the node runs an
@@ -880,14 +894,47 @@ class NavigationNode(Node):
         send_goal()
         last_log_time = 0.0
 
+        obstacle_blocked_since: float = 0.0   # wall-clock time when blocking started
+
         while True:
             now = time.time()
 
-            # Obstacle hold — keep publishing zero vel until clear
+            # ── Obstacle hold with timeout ────────────────────────────────────
+            # While blocked, hold zero velocity. If the path does not clear
+            # within OBSTACLE_HOLD_TIMEOUT_S, the robot is physically wedged
+            # (e.g. against a pillar) and waiting is futile — escalate directly
+            # to the unstuck manoeuvre by cancelling the Nav2 task and breaking
+            # out of the hold so the retry/unstuck logic below can run.
             if self._obstacle_blocked:
                 self._stop_robot()
-                time.sleep(0.1)
+
+                # Record when blocking started (first iteration only)
+                if obstacle_blocked_since == 0.0:
+                    obstacle_blocked_since = now
+
+                held_for = now - obstacle_blocked_since
+                if held_for >= OBSTACLE_HOLD_TIMEOUT_S:
+                    self.get_logger().warn(
+                        f"[OBSTACLE] Blocked for {held_for:.1f}s — path not clearing. "
+                        f"Escalating to unstuck manoeuvre."
+                    )
+                    # Cancel the active Nav2 task so isTaskComplete() returns
+                    # True on the next iteration with CANCELED result, which
+                    # feeds into the existing retry → unstuck flow below.
+                    self.navigator.cancelTask()
+                    # Clear the flag so the hold loop exits and the main loop
+                    # can reach isTaskComplete() on the next iteration.
+                    self._obstacle_blocked = False
+                    obstacle_blocked_since = 0.0
+                    # Also exhaust normal retries so we go straight to unstuck.
+                    nav2_retries_left = 0
+                    time.sleep(0.15)   # let cancelTask propagate
+                else:
+                    time.sleep(0.1)
                 continue
+
+            # Path just cleared — reset the hold timer
+            obstacle_blocked_since = 0.0
 
             dist = self._distance_to_goal(goal_x, goal_y)
 
