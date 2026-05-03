@@ -37,6 +37,7 @@ Debug output (every 3 s when DEBUG_POSE / DEBUG_OBSTACLE are True):
   [DEBUG OBSTACLE] forward scan minimum distance, blocked state
 """
 
+import datetime
 import math
 import os
 import threading
@@ -48,8 +49,14 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool, String
+
+try:
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 
 # ===========================================================================
@@ -108,22 +115,42 @@ XY_ARRIVAL_THRESHOLD = 0.15   # metres
 
 
 # ===========================================================================
-# ROTATE-FIRST CONFIGURATION
+# CLEAR CORRIDOR CONFIGURATION
 #
-# Before handing a goal to Nav2, if the robot's heading error to the goal
-# exceeds ROTATE_THRESHOLD_DEG the node spins in-place on /cmd_vel until
-# within ROTATE_TOLERANCE_DEG, then Nav2 takes over.
+# Used for BOTH pre-navigation heading selection AND unstuck direction search.
+# The single method _find_best_clear_bearing(goal_bearing) handles both cases:
+#   - Pre-nav:  goal_bearing = atan2(goal_y - ry, goal_x - rx)
+#   - Unstuck:  goal_bearing = current robot heading (face best open direction)
 #
-# This prevents driving forward into a wall when transitioning between
-# waypoints on opposite sides of the map.
+# CORRIDOR_MIN_RANGE_M — minimum LiDAR range every beam in the corridor must
+#   clear. Derived from robot geometry:
+#     TurtleBot3 waffle_pi half-width = 0.15 m
+#     Safety margin                   = 0.15 m
+#     Minimum per-beam range          = 0.30 m  (raw obstacle avoidance floor)
+#   For corridor acceptance we use UNSTUCK_CLEAR_THRESHOLD (1.2 m) as the
+#   range floor so the selected direction has planner-usable headroom.
 #
-# /scan obstacle detection is suppressed during rotation so the forward arc
-# does not false-trigger against the wall the robot is turning away from.
+# CORRIDOR_MIN_ARC_DEG — minimum consecutive arc that must clear the range
+#   threshold for a direction to count as a valid passable corridor.
+#   Derived from robot width at UNSTUCK_CLEAR_THRESHOLD range:
+#     Required gap width  = 2 × 0.30 m = 0.60 m  (robot half-width + margin)
+#     chord = 2r·sin(θ/2)  →  0.60 = 2 × 1.2 × sin(θ/2)
+#     θ/2 = arcsin(0.25) = 14.5°  →  θ ≈ 29°  → rounded up to 30°
+#
+# CORRIDOR_GOAL_TOLERANCE_DEG — if the best corridor centre is within this
+#   many degrees of the goal bearing, face the goal directly (exact bearing)
+#   rather than the corridor centre to avoid unnecessary offset.
+#
+# ROTATE_SPEED_RAD / ROTATE_TOLERANCE_DEG / ROTATE_TIMEOUT_S — spin params,
+#   unchanged from before.
 # ===========================================================================
-ROTATE_THRESHOLD_DEG = 45.0   # rotate-first if error exceeds this
-ROTATE_TOLERANCE_DEG = 10.0   # stop rotating when within this
-ROTATE_SPEED_RAD     = 0.6    # rad/s — keep below max_angular_accel in nav2_params
-ROTATE_TIMEOUT_S     = 10.0   # safety cap — give up and proceed if exceeded
+CORRIDOR_MIN_RANGE_M        = 1.2    # metres — same as UNSTUCK_CLEAR_THRESHOLD
+CORRIDOR_MIN_ARC_DEG        = 30     # degrees — minimum corridor width (see maths above)
+CORRIDOR_GOAL_TOLERANCE_DEG = 5.0   # degrees — snap to exact goal bearing if this close
+
+ROTATE_TOLERANCE_DEG = 10.0   # degrees — stop rotating when within this
+ROTATE_SPEED_RAD     = 0.6    # rad/s
+ROTATE_TIMEOUT_S     = 10.0   # seconds
 
 
 # ===========================================================================
@@ -154,26 +181,42 @@ OBSTACLE_HOLD_TIMEOUT_S = 8.0   # seconds before escalating to unstuck
 
 
 # ===========================================================================
+# OBSTACLE PHOTO CONFIGURATION
+#
+# When an obstacle triggers an emergency stop, the node captures one image
+# from the camera topic and saves it with the robot's AMCL coordinates
+# burned into the image as a text overlay.
+#
+# OBSTACLE_PHOTO_DIR   — directory to save images and coordinate files.
+#                        Created automatically if missing.
+# CAMERA_TOPIC         — ROS2 image topic.
+#                        Simulation : /camera/image_raw  (Gazebo camera plugin)
+#                        Real robot : /camera/image_raw  (camera_ros node)
+# CAMERA_TIMEOUT_S     — seconds to wait for a camera frame before giving up.
+#                        If no frame arrives (camera not running in sim without
+#                        the Gazebo camera plugin), the save is skipped silently.
+# ===========================================================================
+OBSTACLE_PHOTO_DIR  = "/home/jsunne/git/RS2Team8/r2_dTour/0_obstacles"
+CAMERA_TOPIC        = "/camera/image_raw"
+CAMERA_TIMEOUT_S    = 2.0
+
+
+# ===========================================================================
 # UNSTUCK CONFIGURATION
 #
 # When Nav2 fails after all retries (robot is wedged), the node runs an
 # unstuck manoeuvre:
-#   1. Scan full 360° for the clearest direction.
-#   2. Rotate to face it (reuses rotate-first logic).
+#   1. Find the best clear corridor closest to the goal bearing via
+#      _find_best_clear_bearing(goal_bearing). This is the same method used
+#      pre-navigation, so the two code paths are unified.
+#   2. Rotate to face that corridor bearing.
 #   3. Drive forward UNSTUCK_DRIVE_DIST m at UNSTUCK_DRIVE_SPEED m/s.
 #   4. Re-issue the original Nav2 goal with UNSTUCK_RETRIES more attempt(s).
 #
-# UNSTUCK_CLEAR_THRESHOLD — minimum LiDAR range (m) a candidate direction
-#   must have to be considered "open". 1.2 m chosen because:
-#     - costmap inflation_radius = 0.75 m, so 1.2 m gives 0.45 m of margin
-#       outside the inflated footprint — enough for the planner to route through.
-#     - At desired_linear_vel = 0.2 m/s, 0.45 m margin = ~2.25 s reaction time.
-#     - Values above 1.5 m risk finding no valid direction in corridor maps.
-#
-# UNSTUCK_DRIVE_DIST  — short forward nudge to clear the robot from the
-#   obstacle before replanning. 0.4 m at 0.1 m/s takes ~4 s.
+# UNSTUCK_CLEAR_THRESHOLD == CORRIDOR_MIN_RANGE_M (1.2 m) — both use the
+#   same clearance threshold so behaviour is consistent.
 # ===========================================================================
-UNSTUCK_CLEAR_THRESHOLD = 1.2    # metres — minimum clearance for a "safe" direction
+UNSTUCK_CLEAR_THRESHOLD = CORRIDOR_MIN_RANGE_M   # kept for backward compat in logs
 UNSTUCK_DRIVE_DIST      = 0.4    # metres — forward nudge distance after rotating
 UNSTUCK_DRIVE_SPEED     = 0.1    # m/s    — slow forward speed during nudge
 UNSTUCK_RETRIES         = 1      # Nav2 re-attempts after a successful unstuck
@@ -366,11 +409,20 @@ class NavigationNode(Node):
         self._obstacle_min_dist: float = float("inf")
         self._scan_lock = threading.Lock()
 
-        # Full scan snapshot for unstuck direction search
+        # Full scan snapshot for corridor search
         self._latest_scan: LaserScan | None = None
         self._latest_scan_lock = threading.Lock()
 
         self.create_subscription(LaserScan, "/scan", self._scan_callback, 10)
+
+        # ── Camera — obstacle photo capture ──────────────────────────────────
+        # Stores the most recent raw image message for saving on obstacle event.
+        # Silently inactive if no publisher is present (e.g. sim without camera).
+        self._latest_image: Image | None = None
+        self._image_lock = threading.Lock()
+        self._photo_taken_this_block: bool = False   # one photo per obstacle event
+
+        self.create_subscription(Image, CAMERA_TOPIC, self._image_callback, 1)
 
         # ── Internal state ───────────────────────────────────────────────────
         self._navigating: bool = False
@@ -464,6 +516,102 @@ class NavigationNode(Node):
                 f"stop_threshold={OBSTACLE_STOP_DIST} m  blocked={blocked}"
             )
 
+    # ── Camera callback ───────────────────────────────────────────────────────
+
+    def _image_callback(self, msg: Image):
+        """Store the latest camera frame (keep only most recent)."""
+        with self._image_lock:
+            self._latest_image = msg
+
+    def _save_obstacle_photo(self):
+        """
+        Save a timestamped JPEG of the current camera frame to OBSTACLE_PHOTO_DIR
+        with the robot's AMCL coordinates burned into the image as a text overlay.
+        Falls back to a sidecar .txt file if PIL is unavailable.
+        Runs in a daemon thread so it never blocks the navigation loop.
+        """
+        def _worker():
+            # Snapshot pose now (called from the scan callback thread)
+            rx, ry = self._get_pose()
+            yaw_deg = math.degrees(self._get_yaw())
+            source  = "amcl" if self._amcl_ever_received else "odom"
+
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
+            stem      = f"obstacle_{timestamp}"
+            os.makedirs(OBSTACLE_PHOTO_DIR, exist_ok=True)
+
+            img_path = os.path.join(OBSTACLE_PHOTO_DIR, f"{stem}.jpg")
+            txt_path = os.path.join(OBSTACLE_PHOTO_DIR, f"{stem}.txt")
+
+            coord_text = (
+                f"x={rx:+.3f} m  y={ry:+.3f} m  yaw={yaw_deg:+.1f} deg  [{source}]"
+            )
+
+            with self._image_lock:
+                ros_img = self._latest_image
+
+            if ros_img is None:
+                # Camera not running (sim without plugin) — write coords only
+                self.get_logger().info(
+                    f"[PHOTO] No camera frame available — writing coords only: {txt_path}"
+                )
+                with open(txt_path, "w") as f:
+                    f.write(f"Obstacle detected: {coord_text}\n")
+                return
+
+            # Convert ROS Image (BGR8 or RGB8) to numpy array
+            try:
+                import numpy as np
+                dtype  = np.uint8
+                arr    = np.frombuffer(ros_img.data, dtype=dtype).reshape(
+                    ros_img.height, ros_img.width, -1
+                )
+
+                if _PIL_AVAILABLE:
+                    # Convert to PIL, burn coords as text overlay, save JPEG
+                    if ros_img.encoding in ("bgr8", "bgra8"):
+                        arr = arr[:, :, ::-1]   # BGR → RGB (drop alpha if present)
+                    pil_img = PILImage.fromarray(arr[:, :, :3])
+                    draw    = ImageDraw.Draw(pil_img)
+
+                    # Semi-transparent black banner at the bottom
+                    banner_h = 36
+                    banner   = PILImage.new("RGBA", (pil_img.width, banner_h), (0, 0, 0, 160))
+                    pil_img.paste(banner, (0, pil_img.height - banner_h), banner)
+
+                    try:
+                        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+                    except Exception:
+                        font = ImageFont.load_default()
+
+                    draw.text((8, pil_img.height - banner_h + 6), coord_text, fill=(255, 255, 0), font=font)
+                    pil_img.save(img_path, "JPEG", quality=85)
+                    self.get_logger().info(f"[PHOTO] Saved: {img_path}  coords: {coord_text}")
+
+                else:
+                    # PIL not available — save raw JPEG via numpy only and write txt
+                    import struct, zlib
+                    # Fallback: write as PPM then rely on user to convert
+                    ppm_path = img_path.replace(".jpg", ".ppm")
+                    with open(ppm_path, "wb") as f:
+                        f.write(f"P6\n{ros_img.width} {ros_img.height}\n255\n".encode())
+                        f.write(arr[:, :, :3].tobytes())
+                    with open(txt_path, "w") as f:
+                        f.write(f"Obstacle detected: {coord_text}\n")
+                        f.write(f"Image saved as PPM: {ppm_path}\n")
+                    self.get_logger().info(f"[PHOTO] PIL unavailable — PPM saved: {ppm_path}")
+
+            except Exception as exc:
+                self.get_logger().warn(f"[PHOTO] Failed to save image: {exc}")
+                try:
+                    with open(txt_path, "w") as f:
+                        f.write(f"Obstacle detected: {coord_text}\n")
+                        f.write(f"Image save failed: {exc}\n")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     # ── Obstacle detection ───────────────────────────────────────────────────
 
     def _scan_callback(self, msg: LaserScan):
@@ -508,9 +656,14 @@ class NavigationNode(Node):
             self._stop_robot()
             if self._navigating:
                 self._publish_status("OBSTACLE")
+            # Take one photo per obstacle event
+            if not self._photo_taken_this_block:
+                self._photo_taken_this_block = True
+                self._save_obstacle_photo()
 
         elif self._obstacle_blocked and min_dist > OBSTACLE_CLEAR_DIST:
             self._obstacle_blocked = False
+            self._photo_taken_this_block = False   # reset for next event
             self.get_logger().info(
                 f"[OBSTACLE] Path cleared ({min_dist:.2f} m) — resuming."
             )
@@ -663,29 +816,107 @@ class NavigationNode(Node):
         )
         self._nav_thread.start()
 
-    # ── Rotate-first ─────────────────────────────────────────────────────────
+    # ── Corridor-based bearing selection and rotation ─────────────────────────
+
+    def _find_best_clear_bearing(self, goal_bearing_rad: float) -> float | None:
+        """
+        Unified method for both pre-navigation heading and unstuck direction.
+
+        Scans the latest 360° LiDAR reading for valid passable corridors:
+          - A corridor is a contiguous arc of beams all >= CORRIDOR_MIN_RANGE_M.
+          - The arc must span at least CORRIDOR_MIN_ARC_DEG (30°, derived from
+            robot body width at 1.2 m range — see constant block for maths).
+          - Each valid corridor is scored by its angular distance from
+            goal_bearing_rad (smaller = better).
+          - The centre bearing of the best-scoring corridor is returned.
+          - If that centre is within CORRIDOR_GOAL_TOLERANCE_DEG of the goal
+            bearing, the exact goal bearing is returned so the robot faces
+            the goal precisely when the path is clear.
+
+        For unstuck use: pass the current robot yaw as goal_bearing_rad so
+        the corridor closest to the current heading is preferred, minimising
+        unnecessary spinning.
+
+        Returns None if no corridor meets the minimum width requirement.
+        """
+        with self._latest_scan_lock:
+            scan = self._latest_scan
+
+        if scan is None:
+            self.get_logger().warn("[CORRIDOR] No scan data available.")
+            return None
+
+        num = len(scan.ranges)
+        if num == 0:
+            return None
+
+        min_beams   = max(1, int(CORRIDOR_MIN_ARC_DEG / 360.0 * num))
+        current_yaw = self._get_yaw()
+
+        # Boolean mask: True where beam clears the range threshold
+        clear = [
+            scan.range_min < r < scan.range_max and r >= CORRIDOR_MIN_RANGE_M
+            for r in scan.ranges
+        ]
+
+        # Scan for contiguous clear runs (wrap-around handled by doubling the list)
+        doubled     = clear + clear
+        best_score  = float("inf")
+        best_bearing = None
+
+        i = 0
+        while i < num:
+            if not doubled[i]:
+                i += 1
+                continue
+            run_start = i
+            j = i
+            while j < run_start + num and doubled[j]:
+                j += 1
+            run_len = j - run_start
+            if run_len >= min_beams:
+                centre_idx      = (run_start + run_len // 2) % num
+                beam_angle_robot = 2.0 * math.pi * centre_idx / num
+                corridor_bearing = current_yaw + beam_angle_robot
+                # Normalise to [-pi, pi]
+                while corridor_bearing >  math.pi: corridor_bearing -= 2 * math.pi
+                while corridor_bearing < -math.pi: corridor_bearing += 2 * math.pi
+                score = abs(angle_diff(corridor_bearing, goal_bearing_rad))
+                self.get_logger().info(
+                    f"[CORRIDOR] corridor: centre={math.degrees(corridor_bearing):.1f}°  "
+                    f"width={run_len}/{num} beams ({run_len/num*360:.0f}°)  "
+                    f"dist_to_goal={math.degrees(score):.1f}°"
+                )
+                if score < best_score:
+                    best_score    = score
+                    best_bearing  = corridor_bearing
+            i = j if j > i else i + 1
+
+        if best_bearing is None:
+            self.get_logger().warn(
+                f"[CORRIDOR] No corridor >= {CORRIDOR_MIN_ARC_DEG}° wide found."
+            )
+            return None
+
+        if math.degrees(best_score) <= CORRIDOR_GOAL_TOLERANCE_DEG:
+            self.get_logger().info(
+                f"[CORRIDOR] Best corridor within {CORRIDOR_GOAL_TOLERANCE_DEG}° of goal "
+                f"— snapping to exact goal bearing."
+            )
+            return goal_bearing_rad
+
+        self.get_logger().info(
+            f"[CORRIDOR] Best bearing: {math.degrees(best_bearing):.1f}°  "
+            f"({math.degrees(best_score):.1f}° from goal {math.degrees(goal_bearing_rad):.1f}°)"
+        )
+        return best_bearing
 
     def _rotate_to_bearing(self, bearing_rad: float, label: str) -> bool:
         """
-        Spin the robot in-place to face `bearing_rad` (radians, map frame).
-        Sets self._rotating = True for the duration (suppresses obstacle detect).
-
-        Returns True when done (or unnecessary), False if cancelled externally.
+        Spin the robot in-place to face bearing_rad (radians, map frame).
+        Sets _rotating = True for the duration (suppresses obstacle detection).
+        Returns True when aligned, False if cancelled externally.
         """
-        current_yaw = self._get_yaw()
-        error_rad   = angle_diff(bearing_rad, current_yaw)
-        error_deg   = math.degrees(abs(error_rad))
-
-        if error_deg <= ROTATE_THRESHOLD_DEG:
-            self.get_logger().info(
-                f"[ROTATE] '{label}': heading error {error_deg:.1f}° — within threshold, skipping."
-            )
-            return True
-
-        self.get_logger().info(
-            f"[ROTATE] '{label}': heading error {error_deg:.1f}° — rotating to "
-            f"{math.degrees(bearing_rad):.1f}°."
-        )
         self._rotating = True
         self._publish_status("ROTATING")
         start = time.time()
@@ -707,7 +938,7 @@ class NavigationNode(Node):
             error_rad   = angle_diff(bearing_rad, current_yaw)
             if abs(error_rad) <= math.radians(ROTATE_TOLERANCE_DEG):
                 self.get_logger().info(
-                    f"[ROTATE] '{label}': facing goal ({math.degrees(abs(error_rad)):.1f}° error) — done."
+                    f"[ROTATE] '{label}': aligned ({math.degrees(abs(error_rad)):.1f}° error)."
                 )
                 break
 
@@ -718,94 +949,62 @@ class NavigationNode(Node):
 
         self._stop_robot()
         self._rotating = False
-        time.sleep(0.1)   # brief settle before Nav2 or next action
+        time.sleep(0.1)
         return True
 
-    def _rotate_to_face_goal(self, goal_x: float, goal_y: float, label: str) -> bool:
-        """Compute bearing to goal then call _rotate_to_bearing."""
-        rx, ry = self._get_pose()
-        bearing = math.atan2(goal_y - ry, goal_x - rx)
+    def _rotate_to_clear_bearing_toward_goal(
+        self, goal_x: float, goal_y: float, label: str
+    ) -> bool:
+        """
+        Pre-navigation: find the best passable corridor closest to the goal
+        bearing and rotate to face it. If the direct path is clear the robot
+        faces the goal exactly. If blocked, it faces the nearest open corridor.
+        Falls back to facing the goal directly if no corridor is found.
+        """
+        rx, ry       = self._get_pose()
+        goal_bearing = math.atan2(goal_y - ry, goal_x - rx)
+        bearing      = self._find_best_clear_bearing(goal_bearing)
+
+        if bearing is None:
+            self.get_logger().warn(
+                f"[ROTATE] '{label}': no clear corridor found — facing goal directly."
+            )
+            bearing = goal_bearing
+
+        self.get_logger().info(
+            f"[ROTATE] '{label}': rotating to {math.degrees(bearing):.1f}° "
+            f"(goal bearing {math.degrees(goal_bearing):.1f}°)"
+        )
         return self._rotate_to_bearing(bearing, label)
 
     # ── Unstuck manoeuvre ─────────────────────────────────────────────────────
 
-    def _find_clearest_direction(self) -> float | None:
-        """
-        Scan the full 360° LiDAR reading and return the bearing (radians,
-        robot frame) of the direction with the most clearance, provided it
-        is above UNSTUCK_CLEAR_THRESHOLD.
-
-        Prefers directions within ±90° of the current heading to minimise
-        unnecessary spinning, but will take any direction if nothing closer
-        meets the threshold.
-
-        Returns None if no direction clears the threshold (very tight space).
-        """
-        with self._latest_scan_lock:
-            scan = self._latest_scan
-
-        if scan is None:
-            self.get_logger().warn("[UNSTUCK] No scan data available for direction search.")
-            return None
-
-        num = len(scan.ranges)
-        if num == 0:
-            return None
-
-        current_yaw = self._get_yaw()
-        best_angle  = None
-        best_range  = 0.0
-
-        for i, r in enumerate(scan.ranges):
-            if not (scan.range_min < r < scan.range_max):
-                continue
-            # TurtleBot3: index 0 = forward, CCW = increasing index
-            beam_angle_robot = 2.0 * math.pi * i / num          # robot frame, CCW
-            beam_angle_map   = angle_diff(current_yaw + beam_angle_robot, 0.0) + current_yaw
-
-            if r > best_range:
-                best_range = r
-                best_angle = beam_angle_map
-
-        if best_range < UNSTUCK_CLEAR_THRESHOLD:
-            self.get_logger().warn(
-                f"[UNSTUCK] Best clearance {best_range:.2f} m < threshold "
-                f"{UNSTUCK_CLEAR_THRESHOLD} m — no safe direction found."
-            )
-            return None
-
-        self.get_logger().info(
-            f"[UNSTUCK] Clearest direction: {math.degrees(best_angle):.1f}° "
-            f"with {best_range:.2f} m clearance."
-        )
-        return best_angle
-
     def _run_unstuck(self, label: str) -> bool:
         """
         Full unstuck manoeuvre:
-          1. Find clearest direction.
+          1. Find the best clear corridor using _find_best_clear_bearing,
+             passing current yaw as the goal so the closest open direction
+             to current heading is preferred (minimises spin).
           2. Rotate to face it.
-          3. Drive forward UNSTUCK_DRIVE_DIST metres at UNSTUCK_DRIVE_SPEED.
+          3. Drive forward UNSTUCK_DRIVE_DIST m at UNSTUCK_DRIVE_SPEED.
 
-        Returns True if the manoeuvre completed (robot moved).
-        Returns False if no clear direction was found or cancelled.
+        Returns True if completed, False if no clear direction or cancelled.
         """
         self.get_logger().warn(f"[UNSTUCK] Starting unstuck manoeuvre for '{label}'.")
         self._publish_status("REROUTING")
 
-        bearing = self._find_clearest_direction()
+        current_yaw = self._get_yaw()
+        bearing     = self._find_best_clear_bearing(current_yaw)
+
         if bearing is None:
-            self.get_logger().warn("[UNSTUCK] Cannot find clear direction — declaring STUCK.")
+            self.get_logger().warn("[UNSTUCK] No clear corridor found — declaring STUCK.")
             self._publish_status("STUCK")
             return False
 
-        # Rotate to face the clear direction
-        self._rotating = True
         ok = self._rotate_to_bearing(bearing, label=f"{label}(unstuck)")
         if not ok:
-            return False   # cancelled
+            return False
 
-        # Drive forward slowly, watching for obstacles
         self.get_logger().info(
             f"[UNSTUCK] Driving forward {UNSTUCK_DRIVE_DIST} m at {UNSTUCK_DRIVE_SPEED} m/s."
         )
@@ -819,8 +1018,8 @@ class NavigationNode(Node):
                 self._stop_robot()
                 return False
 
-            cx, cy = self._get_pose()
-            driven = math.hypot(cx - start_x, cy - start_y)
+            cx, cy  = self._get_pose()
+            driven  = math.hypot(cx - start_x, cy - start_y)
 
             if driven >= UNSTUCK_DRIVE_DIST:
                 self.get_logger().info(f"[UNSTUCK] Drove {driven:.2f} m — done.")
@@ -872,8 +1071,8 @@ class NavigationNode(Node):
           ROTATING -> NAVIGATING -> REROUTING -> STUCK -> FAILED
         """
 
-        # ── Phase 1: rotate-first ─────────────────────────────────────────────
-        ok = self._rotate_to_face_goal(goal_x, goal_y, label)
+        # ── Phase 1: corridor-based pre-navigation rotation ───────────────────
+        ok = self._rotate_to_clear_bearing_toward_goal(goal_x, goal_y, label)
         if not ok:
             self._navigating = False
             self._publish_status("IDLE")
@@ -1015,8 +1214,8 @@ class NavigationNode(Node):
                     self._publish_reached(False)
                     return
 
-                # Re-rotate toward the actual goal and try once more
-                ok = self._rotate_to_face_goal(goal_x, goal_y, label)
+                # Re-rotate toward actual goal using corridor logic then retry
+                ok = self._rotate_to_clear_bearing_toward_goal(goal_x, goal_y, label)
                 if not ok:
                     self._navigating = False
                     self._publish_status("IDLE")

@@ -786,11 +786,12 @@ class GreetingApp:
 
         # ── ROS publishers (set after attach_node) ──────────────────────────
         self.node = None
-        self.start_publisher = None
-        self.stop_publisher = None
-        self.prompt_publisher = None
-        self.goto_publisher = None
-        self.info_publisher = None
+        self.start_publisher      = None
+        self.stop_publisher       = None
+        self.nav_cancel_publisher = None
+        self.prompt_publisher     = None
+        self.goto_publisher       = None
+        self.info_publisher       = None
 
     # IMPROVEMENT 1: Each artefact gets a "Go To" and an "Info" button
     def create_artifact_row(self, parent, label, color):
@@ -847,11 +848,12 @@ class GreetingApp:
 
     def attach_node(self, node):
         self.node = node
-        self.start_publisher  = node.create_publisher(Bool,   '/tour_start',      10)
-        self.stop_publisher   = node.create_publisher(Bool,   '/tour_stop',       10)
-        self.prompt_publisher = node.create_publisher(String, '/artifact_prompt',  10)
-        self.goto_publisher   = node.create_publisher(String, '/artifact_goto',    10)
-        self.info_publisher   = node.create_publisher(String, '/artifact_info',    10)
+        self.start_publisher    = node.create_publisher(Bool,   '/tour_start',         10)
+        self.stop_publisher     = node.create_publisher(Bool,   '/tour_stop',          10)
+        self.nav_cancel_publisher = node.create_publisher(String, '/navigation/cancel', 10)
+        self.prompt_publisher   = node.create_publisher(String, '/artifact_prompt',     10)
+        self.goto_publisher     = node.create_publisher(String, '/artifact_goto',       10)
+        self.info_publisher     = node.create_publisher(String, '/artifact_info',       10)
 
     def cancel_idle_timer(self):
         if self.idle_after_id is not None:
@@ -915,14 +917,21 @@ class GreetingApp:
             self.start_publisher.publish(msg)
 
     def publish_stop(self):
+        self.cancel_idle_timer()
+        self.set_status('Listening')
+        self.set_text('Stopping...')
+        self.set_nav_status('Idle')
+        self.set_buttons_enabled(True)
+        # Stop ongoing speech / greeting sequence
         if self.stop_publisher is not None:
-            self.cancel_idle_timer()
-            self.set_status('Listening')
-            self.set_text('Stopping...')
-            self.set_buttons_enabled(True)
             msg = Bool()
             msg.data = True
             self.stop_publisher.publish(msg)
+        # Cancel any active navigation goal
+        if self.nav_cancel_publisher is not None:
+            msg = String()
+            msg.data = 'cancel'
+            self.nav_cancel_publisher.publish(msg)
 
     def publish_prompt(self):
         if self.prompt_publisher is not None:

@@ -111,7 +111,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.1
-      movement_time_allowance: 10.0
+      movement_time_allowance: 6.0   # RS2 Team 8: reduced from 10s — faster FAILED detection when wedged
     # RS2 Team 8: stateful=false prevents the yaw-correction oscillation spin that
     # DWB/RPP cannot converge on with TurtleBot3. yaw_goal_tolerance=pi means we
     # don't care about final heading — arrival is declared by our own Euclidean
