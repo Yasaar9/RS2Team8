@@ -102,7 +102,7 @@ INITIAL_POSE_YAW = 0.0   # degrees
 #   on Nav2's isTaskComplete() because distance_remaining reports arc-length,
 #   not Euclidean distance, and never converges on TurtleBot3 + RPP.
 # ===========================================================================
-XY_ARRIVAL_THRESHOLD = 0.15   # metres
+XY_ARRIVAL_THRESHOLD = 0.10   # metres — RS2 Team 8: reduced from 0.15 for small gallery space
 
 
 # ===========================================================================
@@ -135,12 +135,12 @@ XY_ARRIVAL_THRESHOLD = 0.15   # metres
 # ROTATE_SPEED_RAD / ROTATE_TOLERANCE_DEG / ROTATE_TIMEOUT_S — spin params,
 #   unchanged from before.
 # ===========================================================================
-CORRIDOR_MIN_RANGE_M        = 1.2    # metres — same as UNSTUCK_CLEAR_THRESHOLD
+CORRIDOR_MIN_RANGE_M        = 0.60   # metres — RS2 Team 8: reduced from 1.2 for small gallery space
 CORRIDOR_MIN_ARC_DEG        = 30     # degrees — minimum corridor width (see maths above)
 CORRIDOR_GOAL_TOLERANCE_DEG = 5.0   # degrees — snap to exact goal bearing if this close
 
 ROTATE_TOLERANCE_DEG = 10.0   # degrees — stop rotating when within this
-ROTATE_SPEED_RAD     = 0.6    # rad/s
+ROTATE_SPEED_RAD     = 0.4    # rad/s  — RS2 Team 8: reduced from 0.6 for small gallery space
 ROTATE_TIMEOUT_S     = 10.0   # seconds
 
 
@@ -148,12 +148,13 @@ ROTATE_TIMEOUT_S     = 10.0   # seconds
 # OBSTACLE DETECTION CONFIGURATION
 #
 # OBSTACLE_STOP_DIST  — range (m) in the forward arc that triggers emergency
-#   stop. Set at 0.5 m to meet D-grade criterion (<0.5 m).
+#   stop. Reduced from 0.5 m to 0.3 m for the small gallery space — 0.5 m
+#   is too large a fraction of the 1.75 m wide room and would trigger constantly.
 # OBSTACLE_CLEAR_DIST — hysteresis clear threshold (slightly above STOP).
 # OBSTACLE_ARC_DEG    — total forward arc scanned (+/- 30 deg from forward).
 # ===========================================================================
-OBSTACLE_STOP_DIST  = 0.5    # metres
-OBSTACLE_CLEAR_DIST = 0.6    # metres
+OBSTACLE_STOP_DIST  = 0.30   # metres — RS2 Team 8: reduced from 0.5 for small gallery
+OBSTACLE_CLEAR_DIST = 0.38   # metres — RS2 Team 8: reduced from 0.6
 OBSTACLE_ARC_DEG    = 60     # degrees
 
 
@@ -208,7 +209,7 @@ CAMERA_TIMEOUT_S    = 2.0
 #   same clearance threshold so behaviour is consistent.
 # ===========================================================================
 UNSTUCK_CLEAR_THRESHOLD = CORRIDOR_MIN_RANGE_M   # kept for backward compat in logs
-UNSTUCK_DRIVE_DIST      = 0.4    # metres — forward nudge distance after rotating
+UNSTUCK_DRIVE_DIST      = 0.15   # metres — RS2 Team 8: reduced from 0.4 (tiny space, 0.4m could hit a wall)
 UNSTUCK_DRIVE_SPEED     = 0.1    # m/s    — slow forward speed during nudge
 UNSTUCK_RETRIES         = 1      # Nav2 re-attempts after a successful unstuck
 

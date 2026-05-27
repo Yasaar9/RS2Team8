@@ -24,34 +24,42 @@
 #   fire_exit_*  — emergency exits              (nearest-fire-exit logic)
 #   home         — robot home / charging station
 #
-# HOW TO RECORD COORDINATES:
+# MAP FRAME:  origin [-1.1, -1.11, 0]  resolution 0.05 m/px
+#   Navigable area:  X [-0.90, +0.85]   Y [-0.86, +0.59]
+#   All waypoints placed 0.35 m from navigable boundary
+#   (0.30 m OBSTACLE_STOP_DIST + 0.05 m margin) so the robot
+#   never triggers the emergency stop when sitting at a waypoint.
+#
+# HOW TO REFINE COORDINATES:
 #   1. Launch the full Nav2 stack with AMCL against the real gallery map.
 #   2. Drive the robot to each POI using teleop.
 #   3. Record the AMCL pose:
 #        ros2 topic echo /amcl_pose --once
 #      Copy position.x, position.y.
-#      To get yaw, note the direction the robot is facing (or use rviz2).
-#   4. Replace the placeholder zeros below.
+#   4. Replace coordinates below.
 #   5. Restart the navigation_node — no rebuild needed.
 #
 # Lines starting with # are comments. Blank lines are ignored.
 # =============================================================================
 
 # ── Home ──────────────────────────────────────────────────────────────────────
-home            0.000    0.000    0.0
+# Centre of the navigable space — safe starting position
+home           -0.025   -0.135    0.0
 
 # ── Artefacts ─────────────────────────────────────────────────────────────────
-# TODO: replace 0.000 coordinates with real AMCL values for each artefact
-artifact_1      0.000    0.000    0.0   Wooden_Toy_Truck   This_wooden_toy_truck_represents_playful_object_design._It_combines_wood,_painted_panels,_wheels,_and_a_small_cargo_tray_to_show_how_everyday_toys_can_be_both_functional_and_decorative.
-artifact_2      0.000    0.000    0.0   Pokemon_Card       This_Japanese_Pokemon_card_features_Dedenne._It_represents_modern_collectible_culture,_combining_illustration,_game_mechanics,_character_branding,_and_printed_design.
-artifact_3      0.000    0.000    0.0   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
-artifact_4      0.000    0.000    0.0   Water_Bottle       This_pink_LARQ_water_bottle_represents_contemporary_product_design._Its_simple_cylindrical_form,_reusable_function,_and_minimal_branding_connect_to_sustainability_and_everyday_lifestyle_objects.
+# Placed at the 4 corners of the safe waypoint zone, facing inward toward centre.
+# Safe zone corners: X [-0.55, +0.50]  Y [-0.51, +0.24]
+# Yaw angles computed so robot faces (-0.03, -0.14) — centre of safe zone.
+artifact_1     -0.550    0.240   -35.5   Wooden_Toy_Truck   This_wooden_toy_truck_represents_playful_object_design._It_combines_wood,_painted_panels,_wheels,_and_a_small_cargo_tray_to_show_how_everyday_toys_can_be_both_functional_and_decorative.
+artifact_2      0.500    0.240  -144.5   Pokemon_Card       This_Japanese_Pokemon_card_features_Dedenne._It_represents_modern_collectible_culture,_combining_illustration,_game_mechanics,_character_branding,_and_printed_design.
+artifact_3      0.500   -0.510   144.5   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
+artifact_4     -0.550   -0.510    35.5   Water_Bottle       This_pink_LARQ_water_bottle_represents_contemporary_product_design._Its_simple_cylindrical_form,_reusable_function,_and_minimal_branding_connect_to_sustainability_and_everyday_lifestyle_objects.
 
 # ── Toilets ───────────────────────────────────────────────────────────────────
-# TODO: record real coordinates for toilets
-toilet_1        0.000    0.000    0.0
+# Middle of upper edge, robot faces South (-90°) into the room
+toilet_1       -0.025    0.240   -90.0
 
 # ── Fire Exits ────────────────────────────────────────────────────────────────
-# TODO: record real coordinates for fire exits
-fire_exit_1     0.000    0.000    0.0
-fire_exit_2     0.000    0.000    0.0
+# Middle of left edge (faces East = 0°) and right edge (faces West = 180°)
+fire_exit_1    -0.550   -0.135     0.0
+fire_exit_2     0.500   -0.135   180.0

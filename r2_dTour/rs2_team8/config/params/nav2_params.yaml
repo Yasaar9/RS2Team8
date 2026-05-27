@@ -110,8 +110,8 @@ controller_server:
     controller_plugins: ["FollowPath"]
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.1
-      movement_time_allowance: 6.0   # RS2 Team 8: reduced from 10s — faster FAILED detection when wedged
+      required_movement_radius: 0.05
+      movement_time_allowance: 4.0   # RS2 Team 8: reduced from 6s — faster FAILED detection when wedged
     # RS2 Team 8: stateful=false prevents the yaw-correction oscillation spin that
     # DWB/RPP cannot converge on with TurtleBot3. yaw_goal_tolerance=pi means we
     # don't care about final heading — arrival is declared by our own Euclidean
@@ -119,23 +119,23 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: false
-      xy_goal_tolerance: 0.30
+      xy_goal_tolerance: 0.15   # RS2 Team 8: tightened from 0.30 for small gallery space
       yaw_goal_tolerance: 3.14159
     # RS2 Team 8: Switched from DWB to Regulated Pure Pursuit (RPP).
     # RPP produces smoother motion, better doorway turns, and does not have the
     # RotateToGoal critic that caused indefinite oscillation at goal with DWB.
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.2
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
+      desired_linear_vel: 0.10   # RS2 Team 8: reduced from 0.2 for small gallery space
+      lookahead_dist: 0.30          # RS2 Team 8: reduced from 0.6 for small gallery space
+      min_lookahead_dist: 0.15      # RS2 Team 8: reduced from 0.3
+      max_lookahead_dist: 0.45      # RS2 Team 8: reduced from 0.9
       lookahead_time: 1.5
       rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.5
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
+      approach_velocity_scaling_dist: 0.25   # RS2 Team 8: reduced from 0.6
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
@@ -166,8 +166,8 @@ local_costmap:
       plugins: ["obstacle_layer", "voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.75   # increased from 0.5 to keep paths clear of columns
-        cost_scaling_factor: 3.0  # lower = gentler gradient, wider avoidance
+        inflation_radius: 0.20   # RS2 Team 8: reduced from 0.75 — old value blocked all paths in 1.75m wide gallery
+        cost_scaling_factor: 5.0  # RS2 Team 8: increased from 3.0 — steeper gradient for tighter clearance
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -254,8 +254,8 @@ global_costmap:
         transform_tolerance: 0.1
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.75   # increased from 0.5 to keep paths clear of columns
-        cost_scaling_factor: 3.0  # lower = gentler gradient, wider avoidance
+        inflation_radius: 0.20   # RS2 Team 8: reduced from 0.75 — old value blocked all paths in 1.75m wide gallery
+        cost_scaling_factor: 5.0  # RS2 Team 8: increased from 3.0 — steeper gradient for tighter clearance
       always_send_full_costmap: true
 
 map_server:
