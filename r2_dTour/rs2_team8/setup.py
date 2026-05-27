@@ -30,6 +30,7 @@ setup(
             'navigation_node = rs2_team8.nodes.navigation:main',
             'send_waypoint   = rs2_team8.nodes.send_waypoint:main',
             'ui_node         = rs2_team8.nodes.ui:main',
+            'detector_node   = rs2_team8.nodes.detectornode:main',
         ],
     },
 )

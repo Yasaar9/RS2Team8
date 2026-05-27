@@ -59,17 +59,26 @@ source ~/.bashrc
 
 echo "export TURTLEBOT3_MODEL=waffle_pi" >> ~/.bashrc
 
+### Simulation Launch
+ros2 launch rs2_team8 rs2_tour.launch.py
+
+### Real robot Launch
+ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
+  waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt
+
 ### World
 
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 
 ### Start Nav2
 
-ros2 launch turtlebot3_navigation2 navigation2.launch.py map:=$HOME/map.yaml
-
 ros2 launch turtlebot3_navigation2 navigation2.launch.py \
   map:=$HOME/git/RS2Team8/r2_dTour/0_maps/simulation_map.yaml \
   params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
+
+### Start Dectector Node
+
+ros2 run rs2_team8 dectector_node
 
 ### Start Navigation node
 
