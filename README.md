@@ -78,9 +78,6 @@ ros2 launch turtlebot3_navigation2 navigation2.launch.py \
   map:=$HOME/git/RS2Team8/r2_dTour/0_maps/simulation_map.yaml \
   params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 
-### Start Dectector Node
-
-ros2 run rs2_team8 dectector_node
 
 ### Start Navigation node
 
@@ -89,6 +86,10 @@ ros2 run rs2_team8 navigation_node
 ### Start Ui Node
 
 ros2 run rs2_team8 ui_node
+
+### Start Dectector Node
+
+ros2 run rs2_team8 dectector_node
 
 ## Connect to real turtlebot
 
