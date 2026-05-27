@@ -38,7 +38,7 @@ amcl:
     z_short: 0.05
     scan_topic: scan
     map_topic: map
-    set_initial_pose: true   # RS2 Team 8: allow navigation.py to set pose programmatically
+    set_initial_pose: false  # RS2 Team 8: real robot pose set via RViz 2D Pose Estimate; sim overrides this via navigation.py setInitialPose()
     always_reset_initial_pose: false
     first_map_only: false
     initial_pose:

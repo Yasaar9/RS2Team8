@@ -362,7 +362,16 @@ class NavigationNode(Node):
 
         # ── Nav2 ─────────────────────────────────────────────────────────────
         self.navigator = BasicNavigator()
-        self._set_initial_pose()
+
+        # Only set the programmatic initial pose in simulation.
+        # On the real robot the map never starts perfectly aligned, so we leave
+        # AMCL uninitialised here and let the operator set it manually with the
+        # RViz "2D Pose Estimate" tool (drag the green arrow) before sending any
+        # navigation goals.  Once the arrow is dragged, AMCL's particle cloud
+        # converges quickly — one short teleop lap makes it converge even faster.
+        use_sim = self.declare_parameter('use_sim', True).get_parameter_value().bool_value
+        if use_sim:
+            self._set_initial_pose()
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.status_pub    = self.create_publisher(String, "/navigation/status",           10)
