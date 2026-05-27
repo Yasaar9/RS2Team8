@@ -129,14 +129,14 @@ def generate_launch_description():
     delayed_ui_node = TimerAction(period=11.0, actions=[ui_node])
 
 
-    detector_node = Node(
-        package="rs2_team8",
-        executable="detector_node",
-        name="detector_node",
-        output="screen"
-    )
+    # detector_node = Node(
+    #     package="rs2_team8",
+    #     executable="detector_node",
+    #     name="detector_node",
+    #     output="screen"
+    # )
 
-    delayed_detector_node = TimerAction(period=12.0, actions=[detector_node])
+    # delayed_detector_node = TimerAction(period=12.0, actions=[detector_node])
 
     return LaunchDescription([
         use_sim_arg,
@@ -147,5 +147,5 @@ def generate_launch_description():
         delayed_nav2,
         delayed_navigation_node,
         delayed_ui_node,
-        delayed_detector_node
+        # delayed_detector_node
     ])

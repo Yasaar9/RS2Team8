@@ -150,6 +150,9 @@ Instructions to map gallery to RS2Team8/r2_dTour/0_maps with file name "gallery_
     ├── turtlebot3/                ← Real files (cloned from ROBOTIS)
     ├── turtlebot3_simulations/    ← Real files (cloned from ROBOTIS)
     └── rs2_team8/            ← Your custom packages here
+        ├── 0_maps/
+        ├── 0_models/
+        ├── 0_obstacles /
         ├── package.xml
         ├── setup.py
         ├── launch/
