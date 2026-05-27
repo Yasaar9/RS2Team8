@@ -44,7 +44,7 @@ home            0.000    0.000    0.0
 # TODO: replace 0.000 coordinates with real AMCL values for each artefact
 artifact_1      0.000    0.000    0.0   Wooden_Toy_Truck   This_wooden_toy_truck_represents_playful_object_design._It_combines_wood,_painted_panels,_wheels,_and_a_small_cargo_tray_to_show_how_everyday_toys_can_be_both_functional_and_decorative.
 artifact_2      0.000    0.000    0.0   Pokemon_Card       This_Japanese_Pokemon_card_features_Dedenne._It_represents_modern_collectible_culture,_combining_illustration,_game_mechanics,_character_branding,_and_printed_design.
-artifact_3    S 0.000    0.000    0.0   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
+artifact_3      0.000    0.000    0.0   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
 artifact_4      0.000    0.000    0.0   Water_Bottle       This_pink_LARQ_water_bottle_represents_contemporary_product_design._Its_simple_cylindrical_form,_reusable_function,_and_minimal_branding_connect_to_sustainability_and_everyday_lifestyle_objects.
 
 # ── Toilets ───────────────────────────────────────────────────────────────────
