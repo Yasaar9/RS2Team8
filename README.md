@@ -145,14 +145,14 @@ Instructions to map gallery to RS2Team8/r2_dTour/0_maps with file name "gallery_
 ├── README.md                      ← Setup instructions for teammates
 ├── .gitignore                     ← Excludes build/, install/, log/
 └── r2_dTour/                      ← All packages (dependencies + your code)
+    ├── 0_maps/
+    ├── 0_models/
+    ├── 0_obstacles /
     ├── DynamixelSDK/              ← Real files (cloned from ROBOTIS)
     ├── turtlebot3_msgs/           ← Real files (cloned from ROBOTIS)
     ├── turtlebot3/                ← Real files (cloned from ROBOTIS)
     ├── turtlebot3_simulations/    ← Real files (cloned from ROBOTIS)
     └── rs2_team8/            ← Your custom packages here
-        ├── 0_maps/
-        ├── 0_models/
-        ├── 0_obstacles /
         ├── package.xml
         ├── setup.py
         ├── launch/

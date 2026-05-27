@@ -80,27 +80,18 @@ INITIAL_POSE_YAW = 0.0   # degrees
 
 
 # ===========================================================================
-# UI LABEL -> WAYPOINT KEY MAP
+# UI LABEL -> WAYPOINT KEY MAP — REMOVED
 #
-# Maps the lowercase string sent by ui_node on /artifact_goto to a waypoint
-# name in the loaded waypoints file, or to a special resolver token.
-#
-# Special tokens (resolved dynamically at runtime):
+# ui_node now publishes waypoint keys directly (e.g. "artifact_1") plus two
+# special tokens for facility navigation:
 #   "nearest_fire_exit" — resolved to the closest waypoint whose name starts
 #                         with "fire_exit_"
 #   "nearest_toilet"    — resolved to the closest waypoint whose name starts
 #                         with "toilet_"
 #
-# Only artefacts 1-4 have UI buttons. Everything else is command-only for now.
+# The display name <-> waypoint key mapping lives in the waypoints .txt file
+# and is loaded by ui_node at startup. No mapping is needed here.
 # ===========================================================================
-UI_TO_WAYPOINT = {
-    "modern art":          "artifact_1",
-    "sculpture":           "artifact_2",
-    "portrait":            "artifact_3",
-    "historical artefact": "artifact_4",
-    "toilet":              "nearest_toilet",
-    "fire exit":           "nearest_fire_exit",
-}
 
 
 # ===========================================================================
@@ -288,9 +279,15 @@ def load_waypoints(filepath: str) -> dict:
         { name: (x, y, yaw_deg) }
 
     File format (whitespace-separated, # comments, blank lines ignored):
-        name   x   y   yaw_degrees
+        name   x   y   yaw_degrees   [display_name]   [description]
 
-    Raises FileNotFoundError or ValueError on bad input.
+    The optional display_name and description fields (used by ui_node) are
+    accepted and silently ignored here — navigation_node only needs the
+    coordinates. ui_node has its own loader that reads the extra fields.
+
+    Raises FileNotFoundError if the file does not exist.
+    Lines with fewer than 4 fields or non-numeric coordinates are skipped
+    with a warning so a single bad line does not abort the whole load.
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(
@@ -305,18 +302,27 @@ def load_waypoints(filepath: str) -> dict:
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 4:
-                raise ValueError(
-                    f"{filepath}:{lineno}: expected 'name x y yaw_deg', "
-                    f"got {len(parts)} token(s): '{line}'"
+            if len(parts) < 4:
+                # Warn and skip rather than crash — display_name/description
+                # lines must have at least name x y yaw.
+                import sys
+                print(
+                    f"[WARN] {filepath}:{lineno}: expected at least 4 fields, "
+                    f"got {len(parts)} — skipping: '{line}'",
+                    file=sys.stderr,
                 )
+                continue
             name = parts[0].lower()
             try:
                 x, y, yaw = float(parts[1]), float(parts[2]), float(parts[3])
             except ValueError as exc:
-                raise ValueError(
-                    f"{filepath}:{lineno}: could not parse numbers: {exc}"
-                ) from exc
+                import sys
+                print(
+                    f"[WARN] {filepath}:{lineno}: could not parse numbers: {exc} — skipping",
+                    file=sys.stderr,
+                )
+                continue
+            # parts[4] = display_name, parts[5] = description — ignored here
             waypoints[name] = (x, y, yaw)
 
     if not waypoints:
@@ -763,24 +769,25 @@ class NavigationNode(Node):
     def _ui_goto_callback(self, msg: String):
         """
         Receives 'Go To' button presses from ui_node via /artifact_goto.
-        Resolves special tokens ('nearest_fire_exit', 'nearest_toilet') to
-        the closest matching waypoint at request time.
+
+        ui_node now publishes waypoint keys directly (e.g. "artifact_1") or
+        one of two special tokens:
+          "nearest_fire_exit" — resolved to the closest fire_exit_* waypoint
+          "nearest_toilet"    — resolved to the closest toilet_* waypoint
+
+        The old UI_TO_WAYPOINT display-name lookup has been removed. The
+        display name <-> waypoint key mapping now lives in the .txt file and
+        is handled entirely by ui_node.
         """
-        label    = msg.data.strip().lower()
-        waypoint = UI_TO_WAYPOINT.get(label)
+        label = msg.data.strip().lower()
 
-        if waypoint is None:
-            self.get_logger().warn(
-                f"[UI] No mapping for '{label}'. "
-                f"Known UI labels: {list(UI_TO_WAYPOINT.keys())}"
-            )
-            return
-
-        # Resolve nearest-X tokens dynamically
-        if waypoint == "nearest_fire_exit":
+        # Resolve special nearest-X tokens dynamically
+        if label == "nearest_fire_exit":
             waypoint = self._nearest_of_type("fire_exit_")
-        elif waypoint == "nearest_toilet":
+        elif label == "nearest_toilet":
             waypoint = self._nearest_of_type("toilet_")
+        else:
+            waypoint = label   # already a waypoint key (e.g. "artifact_1")
 
         if waypoint is None:
             self.get_logger().warn(
@@ -790,7 +797,8 @@ class NavigationNode(Node):
 
         if waypoint not in self.WAYPOINTS:
             self.get_logger().warn(
-                f"[UI] Resolved waypoint '{waypoint}' not in loaded waypoints."
+                f"[UI] Waypoint '{waypoint}' not in loaded waypoints. "
+                f"Available: {list(self.WAYPOINTS.keys())}"
             )
             return
 
