@@ -66,6 +66,8 @@ ros2 launch rs2_team8 rs2_tour.launch.py
 ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
   waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt
 
+## Run Each Node Seperatly
+
 ### World
 
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py

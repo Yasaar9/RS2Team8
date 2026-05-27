@@ -512,13 +512,21 @@ class GreetingNode(Node):
 
     def handle_goto(self, selection):
         """
-        selection is a waypoint key (e.g. 'artifact_1') or a facility name
-        ('fire exit', 'toilet').
+        selection is a waypoint key (e.g. 'artifact_1'), a facility name
+        ('fire exit', 'toilet'), or a pre-resolved special token
+        ('nearest_fire_exit', 'nearest_toilet') sent by publish_goto.
 
-        FIX 1: publishes the waypoint key directly to /artifact_goto, or the
-        special tokens 'nearest_toilet' / 'nearest_fire_exit' for facilities.
-        navigation_node resolves both without any UI_TO_WAYPOINT lookup.
+        All three forms are handled so navigation AND the spoken confirmation
+        both work correctly.
         """
+        # Normalise special tokens back to their facility name for display/speech
+        SPECIAL_TO_FACILITY = {
+            'nearest_fire_exit': 'fire exit',
+            'nearest_toilet':    'toilet',
+        }
+        if selection in SPECIAL_TO_FACILITY:
+            selection = SPECIAL_TO_FACILITY[selection]
+
         try:
             if selection in self.artifacts:
                 display = self._key_to_display(selection)

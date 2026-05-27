@@ -465,8 +465,11 @@ class NavigationNode(Node):
         qw  = msg.pose.pose.orientation.w
 
         with self._odom_lock:
-            self._odom_x = x
-            self._odom_y = y
+            self._odom_x  = x
+            self._odom_y  = y
+            # Store velocities so _cancel_callback can confirm the robot stopped
+            self._odom_vx = msg.twist.twist.linear.x
+            self._odom_wz = msg.twist.twist.angular.z
 
         with self._yaw_lock:
             self._robot_yaw = quaternion_to_yaw(qz, qw)
@@ -759,11 +762,45 @@ class NavigationNode(Node):
         self._navigate_to(msg, label="raw_pose", goal_x=x, goal_y=y)
 
     def _cancel_callback(self, _msg: String):
+        """
+        Cancel the active Nav2 goal and physically halt the robot.
+
+        Problem: Nav2's controller server keeps publishing /cmd_vel on its own
+        timer (10 Hz by default) even after cancelTask() is called. A single
+        _stop_robot() call races against Nav2 and loses. The nav thread check
+        (_navigating = False) makes the thread exit cleanly but does not stop
+        Nav2's controller from driving the wheels.
+
+        Fix: after cancelling, we keep publishing zero-velocity at 20 Hz for
+        up to 1 second, stopping as soon as odometry confirms the robot is
+        stationary (linear + angular velocity both < 0.01). This guarantees
+        the stop wins regardless of how long Nav2 takes to shut its controller.
+        """
         self.get_logger().info("Cancel received — stopping navigation.")
-        self.navigator.cancelTask()
-        self._stop_robot()
+
+        # 1. Flag first — nav thread exits on its next loop iteration check
         self._navigating = False
         self._rotating   = False
+
+        # 2. Tell Nav2 to abort the goal
+        self.navigator.cancelTask()
+
+        # 3. Keep hammering zero-velocity until odometry confirms stopped,
+        #    or until 1 s elapses as a safety timeout.
+        stop_cmd  = Twist()
+        deadline  = time.time() + 1.0
+        while time.time() < deadline:
+            self.cmd_vel_pub.publish(stop_cmd)
+            # Check odometry to see if robot has actually stopped
+            with self._odom_lock:
+                vx = getattr(self, '_odom_vx', None)
+                wz = getattr(self, '_odom_wz', None)
+            if vx is not None and abs(vx) < 0.01 and abs(wz) < 0.01:
+                break
+            time.sleep(0.05)
+
+        # Final stop pulse
+        self.cmd_vel_pub.publish(stop_cmd)
         self._publish_status("IDLE")
 
     def _ui_goto_callback(self, msg: String):
@@ -1105,6 +1142,18 @@ class NavigationNode(Node):
 
         while True:
             now = time.time()
+
+            # -- Cancel check: must be first thing every iteration -------
+            # _cancel_callback sets _navigating = False from the ROS
+            # callback thread. Checking here guarantees the thread exits
+            # within one loop cycle (<=0.1 s) regardless of Nav2 state.
+            if not self._navigating:
+                self.get_logger().info(
+                    f"[NAV] '{label}': cancel detected -- exiting nav thread."
+                )
+                self._stop_robot()
+                self._publish_status("IDLE")
+                return
 
             # ── Obstacle hold with timeout ────────────────────────────────────
             # While blocked, hold zero velocity. If the path does not clear
