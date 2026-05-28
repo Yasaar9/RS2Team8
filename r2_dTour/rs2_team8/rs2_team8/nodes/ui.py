@@ -278,6 +278,13 @@ class GreetingNode(Node):
         if self.plan_active:
             self.plan_active = False
             self.app.end_plan()
+        # Publish navigation cancel so the robot physically stops.
+        # publish_stop() on the tkinter side does this too, but stop_callback
+        # is the ROS path (e.g. /tour_stop topic) and must do it independently.
+        if self.app.nav_cancel_publisher is not None:
+            cancel_msg = String()
+            cancel_msg.data = 'cancel'
+            self.app.nav_cancel_publisher.publish(cancel_msg)
         self.app.cancel_idle_timer()
         self.app.set_status('Listening')
         self.app.set_text('Stopping... Ready for user input.')
@@ -378,6 +385,17 @@ class GreetingNode(Node):
             if status in ('REACHED', 'FAILED', 'STUCK', 'IDLE'):
                 self.is_busy = False
                 self.app.set_buttons_enabled(True)
+                if status == 'REACHED':
+                    self.app.set_status('Listening')
+                    self.app.set_text('Destination reached. Ready for user input.')
+                    self.app.set_destination('None')
+                    self.app.start_idle_timer()
+                elif status in ('FAILED', 'STUCK'):
+                    self.app.set_status('Error')
+                    self.app.set_text('Navigation failed. Ready for user input.')
+                    self.app.set_destination('None')
+                elif status == 'IDLE':
+                    self.app.set_status('Listening')
 
     # ── Plan control ──────────────────────────────────────────────────────────
 
@@ -518,6 +536,11 @@ class GreetingNode(Node):
 
         All three forms are handled so navigation AND the spoken confirmation
         both work correctly.
+
+        IMPORTANT: for navigation requests, is_busy is intentionally left True
+        and the UI is left in Navigating state after this method returns.
+        nav_status_callback owns the transition back to Listening/idle when
+        REACHED, FAILED, or STUCK arrives from navigation_node.
         """
         # Normalise special tokens back to their facility name for display/speech
         SPECIAL_TO_FACILITY = {
@@ -526,6 +549,8 @@ class GreetingNode(Node):
         }
         if selection in SPECIAL_TO_FACILITY:
             selection = SPECIAL_TO_FACILITY[selection]
+
+        nav_goal_sent = False   # track whether we handed off to navigation
 
         try:
             if selection in self.artifacts:
@@ -537,18 +562,21 @@ class GreetingNode(Node):
                 if self.stop_requested:
                     self.return_to_listening('Stopping... Ready for user input.')
                     return
-                # Publish waypoint key — navigation_node looks it up directly
-                if self.goto_publisher is not None:
+                # Publish directly to /navigation/go_to_waypoint — NOT to
+                # /artifact_goto, because the node subscribes to that topic
+                # and would re-trigger goto_callback, creating an infinite loop.
+                if self.app.nav_waypoint_publisher is not None:
                     goto_msg = String()
                     goto_msg.data = selection  # e.g. "artifact_1"
-                    self.goto_publisher.publish(goto_msg)
-                    self.get_logger().info(f'Published /artifact_goto: {selection}')
+                    self.app.nav_waypoint_publisher.publish(goto_msg)
+                    self.get_logger().info(f'Published /navigation/go_to_waypoint: {selection}')
                 selected_msg = String()
                 selected_msg.data = selection
                 self.selected_artifact_publisher.publish(selected_msg)
                 self.app.set_status('Navigating')
-                self.app.set_nav_status(f'Navigating to {display}...')
-                self.return_to_listening(f'Navigating to {display}. Ready for input.')
+                self.app.set_text(f'Navigating to {display}...')
+                self.app.set_buttons_enabled(False)
+                nav_goal_sent = True
                 return
 
             if selection in self.facilities:
@@ -560,18 +588,19 @@ class GreetingNode(Node):
                 if self.stop_requested:
                     self.return_to_listening('Stopping... Ready for user input.')
                     return
-                # Publish special tokens for facility navigation
-                if self.goto_publisher is not None:
+                # Publish special tokens directly to /navigation/go_to_waypoint
+                if self.app.nav_waypoint_publisher is not None:
                     goto_msg = String()
                     if selection == 'toilet':
                         goto_msg.data = 'nearest_toilet'
                     else:
                         goto_msg.data = 'nearest_fire_exit'
-                    self.goto_publisher.publish(goto_msg)
-                    self.get_logger().info(f'Published /artifact_goto: {goto_msg.data}')
+                    self.app.nav_waypoint_publisher.publish(goto_msg)
+                    self.get_logger().info(f'Published /navigation/go_to_waypoint: {goto_msg.data}')
                 self.app.set_status('Navigating')
-                self.app.set_nav_status(f'Navigating to {display}...')
-                self.return_to_listening(f'Navigating to {display}. Ready for input.')
+                self.app.set_text(f'Navigating to {display}...')
+                self.app.set_buttons_enabled(False)
+                nav_goal_sent = True
                 return
 
             error_message = 'Sorry, that destination is not available.'
@@ -586,9 +615,14 @@ class GreetingNode(Node):
             self.app.set_text(f'Error: {e}')
         finally:
             self.audio_process = None
-            self.is_busy = False
             self.stop_requested = False
-            self.app.set_buttons_enabled(True)
+            # Only release busy and re-enable buttons if we did NOT send a nav
+            # goal. If we did, nav_status_callback owns the reset when
+            # REACHED/FAILED/STUCK arrives — clearing is_busy here would allow
+            # new button presses to interrupt active navigation.
+            if not nav_goal_sent:
+                self.is_busy = False
+                self.app.set_buttons_enabled(True)
 
     def handle_info(self, selection):
         """selection is a waypoint key (e.g. 'artifact_1')."""
@@ -1068,12 +1102,13 @@ class GreetingApp:
 
         # ── ROS publishers (set after attach_node) ──────────────────────────
         self.node = None
-        self.start_publisher      = None
-        self.stop_publisher       = None
-        self.nav_cancel_publisher = None
-        self.prompt_publisher     = None
-        self.goto_publisher       = None
-        self.info_publisher       = None
+        self.start_publisher        = None
+        self.stop_publisher         = None
+        self.nav_cancel_publisher   = None
+        self.nav_waypoint_publisher = None
+        self.prompt_publisher       = None
+        self.goto_publisher         = None
+        self.info_publisher         = None
 
         self.root.bind('<Configure>', self._on_resize)
 
@@ -1128,7 +1163,8 @@ class GreetingApp:
         self.node = node
         self.start_publisher      = node.create_publisher(Bool,   '/tour_start',         10)
         self.stop_publisher       = node.create_publisher(Bool,   '/tour_stop',          10)
-        self.nav_cancel_publisher = node.create_publisher(String, '/navigation/cancel',  10)
+        self.nav_cancel_publisher = node.create_publisher(String, '/navigation/cancel',       10)
+        self.nav_waypoint_publisher = node.create_publisher(String, '/navigation/go_to_waypoint', 10)
         self.prompt_publisher     = node.create_publisher(String, '/artifact_prompt',    10)
         self.goto_publisher       = node.create_publisher(String, '/artifact_goto',      10)
         self.info_publisher       = node.create_publisher(String, '/artifact_info',      10)

@@ -861,6 +861,16 @@ class NavigationNode(Node):
             self.navigator.cancelTask()
             self._stop_robot()
 
+        # Wait for any previous navigation thread to fully exit before starting
+        # a new one. Without this, if Stop was pressed and the thread is still
+        # winding down, the new goal can be silently dropped because _navigating
+        # gets set False by the old thread AFTER we set it True here.
+        if self._nav_thread is not None and self._nav_thread.is_alive():
+            self.get_logger().info("[NAV] Waiting for previous thread to exit...")
+            self._nav_thread.join(timeout=3.0)
+            if self._nav_thread.is_alive():
+                self.get_logger().warn("[NAV] Previous thread did not exit in time — proceeding anyway.")
+
         pose.header.stamp = self.get_clock().now().to_msg()
         self._navigating  = True
         self._rotating    = False
@@ -1222,6 +1232,15 @@ class NavigationNode(Node):
                     f"[NAV] '{label}': arrived ({dist:.3f} m) — REACHED."
                 )
                 self.navigator.cancelTask()
+                stop_deadline = time.time() + 2.0
+                while time.time() < stop_deadline:
+                    self._stop_robot()
+                    with self._odom_lock:
+                        lin = abs(getattr(self, '_odom_vx', 0.0))
+                        ang = abs(getattr(self, '_odom_wz', 0.0))
+                    if lin < 0.01 and ang < 0.05:
+                        break
+                    time.sleep(0.05)
                 self._stop_robot()
                 self._navigating = False
                 self._publish_status("REACHED")
@@ -1236,10 +1255,18 @@ class NavigationNode(Node):
             result = self.navigator.getResult()
 
             if result == TaskResult.SUCCEEDED:
-                # Nav2 declared success — accept if we're close enough
                 self.get_logger().info(
                     f"[NAV] '{label}': Nav2 SUCCEEDED at dist={dist:.3f} m — accepting."
                 )
+                stop_deadline = time.time() + 2.0
+                while time.time() < stop_deadline:
+                    self._stop_robot()
+                    with self._odom_lock:
+                        lin = abs(getattr(self, '_odom_vx', 0.0))
+                        ang = abs(getattr(self, '_odom_wz', 0.0))
+                    if lin < 0.01 and ang < 0.05:
+                        break
+                    time.sleep(0.05)
                 self._stop_robot()
                 self._navigating = False
                 self._publish_status("REACHED")
