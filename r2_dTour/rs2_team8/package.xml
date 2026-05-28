@@ -2,20 +2,25 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rs2_team8</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="jerry.z.sun@student.uts.edu.au">jsunne</maintainer>
-  <license>TODO: License declaration</license>
+  <version>1.0.0</version>
+  <description>
+    RS2 Team 8 : Social Tour Guide Robot.
+    Autonomous gallery tour guide built on ROS 2 Humble and TurtleBot3 Waffle Pi.
+    Provides waypoint navigation, obstacle avoidance and recovery, touchscreen GUI,
+    text-to-speech artefact descriptions, and camera-based object detection.
+  </description>
 
-  <test_depend>ament_copyright</test_depend>
-  <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_pep257</test_depend>
-  <test_depend>python3-pytest</test_depend>
+  <maintainer email="jerry.z.sun@student.uts.edu.au">Jerry Sun</maintainer>
 
+  <license>MIT</license>
+
+  <author email="jerry.z.sun@student.uts.edu.au">Jerry Sun</author>
+
+  <!-- Runtime dependencies -->
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>nav2_simple_commander</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
@@ -23,7 +28,12 @@
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  
+
+  <!-- Test dependencies -->
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

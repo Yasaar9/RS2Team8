@@ -1,98 +1,123 @@
 """
-RS2 Team 8 — Master launch file
-Starts the full tour guide robot system in one command.
+RS2 Team 8 - Master launch file
+
+map, waypoints_file, and params_file are ALL REQUIRED — the launch will
+fail immediately with a clear error if any are missing. This prevents
+accidentally running with wrong files on demo day.
 
 Usage:
-    # Simulation (default)
-    ros2 launch rs2_team8 rs2_tour.launch.py
+    # Simulation
+    ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=true \
+        map:=$HOME/git/RS2Team8/r2_dTour/0_maps/simulation_map.yaml \
+        waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/simulation_waypoints.txt \
+        params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 
     # Real gallery robot
-    ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false
-
-    # Real gallery robot with explicit paths (if defaults don't match your setup)
     ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
         map:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map.yaml \
-        waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt
+        waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt \
+        params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 
-Launch arguments:
-    use_sim         (bool,   default true)  — launch Gazebo + use sim map/waypoints
-    waypoints_file  (string)                — override waypoints .txt path
-    map             (string)                — override map .yaml path
-    params_file     (string)                — override nav2_params .yaml path
+Launch arguments (all required except use_sim):
+    use_sim         (bool)    — true = Gazebo + no RViz. false = real robot + RViz.
+    map             (string)  — absolute path to map .yaml file
+    waypoints_file  (string)  — absolute path to waypoints .txt file
+    params_file     (string)  — absolute path to nav2_params .yaml file
+
+Sim:        Gazebo ON,  RViz OFF, initial pose set programmatically at (0,0)
+Real robot: Gazebo OFF, RViz ON,  set pose manually via RViz 2D Pose Estimate
 
 Real robot startup procedure:
-    1. ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false
-    2. Wait for RViz to open (takes ~10 s for Nav2 to activate).
-    3. In RViz, click "2D Pose Estimate" and drag the green arrow to the
-       robot's approximate position and heading on the map. Does not need
-       to be exact — AMCL's particle cloud will converge from here.
-    4. Teleop the robot one short lap (or just drive it forward and back)
-       to help AMCL converge before sending navigation goals.
-    5. Once the pose cloud has converged in RViz, press buttons in the UI.
+    1. Run the launch command above with use_sim:=false
+    2. Wait for RViz to open (~10 s for Nav2 to activate)
+    3. In RViz click "2D Pose Estimate" and drag the green arrow to the
+       robot's approximate position and heading — does not need to be exact
+    4. Teleop one short lap to help AMCL converge before sending goals
+    5. Once the particle cloud tightens in RViz, use the UI buttons
 """
 
 import os
+import sys
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     TimerAction,
+    OpaqueFunction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 
+def validate_args(context, *args, **kwargs):
+    """Fail fast with a clear message if any required argument is missing."""
+    errors = []
+
+    map_val = context.launch_configurations.get("map", "")
+    wp_val  = context.launch_configurations.get("waypoints_file", "")
+    pf_val  = context.launch_configurations.get("params_file", "")
+
+    if not map_val:
+        errors.append("  map:=<path to .yaml>")
+    elif not os.path.isfile(map_val):
+        errors.append(f"  map: file not found: {map_val}")
+
+    if not wp_val:
+        errors.append("  waypoints_file:=<path to .txt>")
+    elif not os.path.isfile(wp_val):
+        errors.append(f"  waypoints_file: file not found: {wp_val}")
+
+    if not pf_val:
+        errors.append("  params_file:=<path to .yaml>")
+    elif not os.path.isfile(pf_val):
+        errors.append(f"  params_file: file not found: {pf_val}")
+
+    if errors:
+        msg = "\n\nRS2 Team 8 launch FAILED — missing or invalid arguments:\n"
+        msg += "\n".join(errors)
+        msg += "\n\nSee the docstring at the top of rs2_tour.launch.py for full commands.\n"
+        sys.exit(msg)
+
+    return []
+
+
 def generate_launch_description():
 
-    home = os.path.expanduser("~")
-    repo = os.path.join(home, "git/RS2Team8/r2_dTour")
-
-    # ── Launch arguments ─────────────────────────────────────────────────────
+    # -- Launch arguments -----------------------------------------------------
     use_sim_arg = DeclareLaunchArgument(
         "use_sim",
         default_value="true",
-        description="true = Gazebo sim (default). false = real gallery robot.",
+        description="true = Gazebo sim (RViz off). false = real robot (RViz on).",
     )
 
-    # Waypoints: sim default vs gallery default, overridable
-    waypoints_file_arg = DeclareLaunchArgument(
-        "waypoints_file",
-        default_value=PythonExpression([
-            "'", os.path.join(repo, "0_maps/gallery_waypoints.txt"), "' if '",
-            LaunchConfiguration("use_sim"),
-            "' == 'false' else '",
-            os.path.join(repo, "0_maps/simulation_waypoints.txt"), "'",
-        ]),
-        description="Absolute path to the waypoints .txt file.",
-    )
-
-    # Map: sim default vs gallery default, overridable
+    # No default_value — launch fails immediately if not supplied
     map_arg = DeclareLaunchArgument(
         "map",
-        default_value=PythonExpression([
-            "'", os.path.join(repo, "0_maps/gallery_map.yaml"), "' if '",
-            LaunchConfiguration("use_sim"),
-            "' == 'false' else '",
-            os.path.join(repo, "0_maps/simulation_map.yaml"), "'",
-        ]),
-        description="Absolute path to the map .yaml file.",
+        description="REQUIRED: absolute path to map .yaml file.",
+    )
+
+    waypoints_file_arg = DeclareLaunchArgument(
+        "waypoints_file",
+        description="REQUIRED: absolute path to waypoints .txt file.",
     )
 
     params_file_arg = DeclareLaunchArgument(
         "params_file",
-        default_value=os.path.join(repo, "rs2_team8/config/params/nav2_params.yaml"),
-        description="Absolute path to the nav2_params .yaml file.",
+        description="REQUIRED: absolute path to nav2_params .yaml file.",
     )
 
     use_sim        = LaunchConfiguration("use_sim")
-    waypoints_file = LaunchConfiguration("waypoints_file")
     map_yaml       = LaunchConfiguration("map")
+    waypoints_file = LaunchConfiguration("waypoints_file")
     params_file    = LaunchConfiguration("params_file")
 
-    # ── 1. Gazebo simulation (simulation only) ───────────────────────────────
+    # Validate all required args exist on disk before anything else starts
+    validate = OpaqueFunction(function=validate_args)
+
+    # -- 1. Gazebo (sim only) -------------------------------------------------
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -103,13 +128,9 @@ def generate_launch_description():
         condition=IfCondition(use_sim),
     )
 
-    # ── 2. Nav2 stack ─────────────────────────────────────────────────────────
-    # Simulation : delayed 4 s so Gazebo clock and URDF are available first.
-    # Real robot : starts immediately (no Gazebo to wait for).
-    #
-    # use_rviz:
-    #   Simulation  → false  (no need for RViz; initial pose set programmatically)
-    #   Real robot  → true   (operator MUST use RViz 2D Pose Estimate to set pose)
+    # -- 2. Nav2 stack --------------------------------------------------------
+    # Sim:        delayed 4 s for Gazebo to settle, RViz OFF
+    # Real robot: delayed 2 s, RViz ON (operator must set 2D Pose Estimate)
     nav2_launch_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -135,30 +156,24 @@ def generate_launch_description():
         launch_arguments={
             "map":         map_yaml,
             "params_file": params_file,
-            "use_rviz":    "true",   # RViz required on real robot for 2D Pose Estimate
+            "use_rviz":    "true",
         }.items(),
         condition=UnlessCondition(use_sim),
     )
 
     delayed_nav2_sim  = TimerAction(period=4.0, actions=[nav2_launch_sim])
-    # Real robot Nav2 starts immediately — no Gazebo delay needed
     delayed_nav2_real = TimerAction(period=2.0, actions=[nav2_launch_real])
 
-    # ── 3. navigation_node ───────────────────────────────────────────────────
-    # Delayed 10 s (sim) / 15 s (real) to give Nav2 time to fully activate.
-    # Real robot gets extra time because the operator also needs to set the
-    # 2D Pose Estimate in RViz before navigation_node calls waitUntilNav2Active().
-    # use_sim is passed as a parameter so navigation_node skips setInitialPose()
-    # on the real robot (pose is set manually via RViz instead).
+    # -- 3. navigation_node ---------------------------------------------------
+    # Sim:        delayed 10 s — Nav2 fully activates then pose set at (0,0)
+    # Real robot: delayed 15 s — gives operator time to set 2D Pose Estimate
+    #             in RViz before waitUntilNav2Active() is called
     navigation_node_sim = Node(
         package="rs2_team8",
         executable="navigation_node",
         name="navigation_node",
         output="screen",
-        parameters=[{
-            "waypoints_file": waypoints_file,
-            "use_sim": True,
-        }],
+        parameters=[{"waypoints_file": waypoints_file, "use_sim": True}],
         condition=IfCondition(use_sim),
     )
 
@@ -167,46 +182,55 @@ def generate_launch_description():
         executable="navigation_node",
         name="navigation_node",
         output="screen",
-        parameters=[{
-            "waypoints_file": waypoints_file,
-            "use_sim": False,
-        }],
+        parameters=[{"waypoints_file": waypoints_file, "use_sim": False}],
         condition=UnlessCondition(use_sim),
     )
 
     delayed_navigation_node_sim  = TimerAction(period=10.0, actions=[navigation_node_sim])
     delayed_navigation_node_real = TimerAction(period=15.0, actions=[navigation_node_real])
 
-    # ── 4. ui_node ──────────────────────────────────────────────────────────
-    # Delayed 1 s after navigation_node in each case.
-    # DISPLAY forwarded explicitly so tkinter opens a window under ros2 launch.
+    # -- 4. ui_node -----------------------------------------------------------
+    # Two separate Node objects required — ros2 launch raises
+    # "executed more than once" if the same instance appears twice.
     display = os.environ.get("DISPLAY", ":0")
 
-    ui_node = Node(
+    ui_node_sim = Node(
         package="rs2_team8",
         executable="ui_node",
         name="ui_node",
         output="screen",
         emulate_tty=True,
         additional_env={"DISPLAY": display},
+        condition=IfCondition(use_sim),
     )
 
-    delayed_ui_node_sim  = TimerAction(period=11.0, actions=[ui_node])
-    delayed_ui_node_real = TimerAction(period=16.0, actions=[ui_node])
+    ui_node_real = Node(
+        package="rs2_team8",
+        executable="ui_node",
+        name="ui_node",
+        output="screen",
+        emulate_tty=True,
+        additional_env={"DISPLAY": display},
+        condition=UnlessCondition(use_sim),
+    )
+
+    delayed_ui_node_sim  = TimerAction(period=11.0, actions=[ui_node_sim])
+    delayed_ui_node_real = TimerAction(period=16.0, actions=[ui_node_real])
 
     # detector_node = Node(
     #     package="rs2_team8",
     #     executable="detector_node",
     #     name="detector_node",
-    #     output="screen"
+    #     output="screen",
     # )
     # delayed_detector_node = TimerAction(period=12.0, actions=[detector_node])
 
     return LaunchDescription([
         use_sim_arg,
-        waypoints_file_arg,
         map_arg,
+        waypoints_file_arg,
         params_file_arg,
+        validate,
         # Sim path
         gazebo_launch,
         delayed_nav2_sim,
