@@ -165,7 +165,7 @@ Gazebo opens → Nav2 activates after 4 s → navigation_node and UI start after
 
 ### Real robot
 
-First Robot bringup (SSH into robot)
+SSH into robot on two terminals
  
 ```bash
 ssh ubuntu@192.168.0.XXX
@@ -182,7 +182,8 @@ launch bringup
 ```bash
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
-On new terminal on the robot (via SSH):
+On second SSH terminal on the robot (via SSH):
+
 ```bash
 ros2 run camera_ros camera_node --ros-args -p format:=RGB888
 ```
@@ -194,7 +195,6 @@ ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
   waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt \
   params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 ```
-
 
 Nav2 and RViz open after 2 s → navigation_node and UI start after 15–16 s.
 
@@ -211,7 +211,6 @@ Nav2 and RViz open after 2 s → navigation_node and UI start after 15–16 s.
 > source ~/.bashrc
 > ```
 
-### Simulation
 
 #### 1. Gazebo world
 ```bash
@@ -237,57 +236,6 @@ ros2 run rs2_team8 navigation_node \
 #### 4. UI node
 ```bash
 ros2 run rs2_team8 ui_node
-```
-
----
-
-### Real Robot
-
-#### 1. Nav2 with RViz
-
-First Robot bringup (SSH into robot)
- 
-```bash
-ssh ubuntu@192.168.0.XXX
-ros2 launch turtlebot3_bringup robot.launch.py
-```
-
-```bash
-ros2 launch turtlebot3_navigation2 navigation2.launch.py \
-  map:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map.yaml \
-  params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml \
-  use_rviz:=true
-```
-
-When RViz opens, click "2D Pose Estimate" and place the arrow at the robot's starting position.
-
-#### 2. Navigation node
-```bash
-ros2 run rs2_team8 navigation_node \
-  --ros-args \
-  -p use_sim:=false \
-  -p waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt
-```
-
-#### 3. UI node
-```bash
-ros2 run rs2_team8 ui_node
-```
-
----
-
-## Detector Node (Run Separately To Generate a Waypoint File)
-
-The detector node runs independently to generate a labelled map of detected objects and save results to a text file. It does not need to run during normal navigation.
-
-```bash
-ros2 run rs2_team8 detector_node
-```
-
-Monitor detections:
-```bash
-ros2 topic echo /perception/detection_label
-ros2 run rqt_image_view rqt_image_view /camera/image_detections
 ```
 
 ---
