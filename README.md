@@ -162,6 +162,13 @@ Gazebo opens → Nav2 activates after 4 s → navigation_node and UI start after
 
 ### Real robot (single command)
 
+First Robot bringup (SSH into robot)
+ 
+```bash
+ssh ubuntu@192.168.0.XXX
+ros2 launch turtlebot3_bringup robot.launch.py
+```
+
 ```bash
 ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
   map:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map.yaml \
@@ -221,6 +228,14 @@ ros2 run rs2_team8 ui_node
 ### Real Robot
 
 #### 1. Nav2 with RViz
+
+First Robot bringup (SSH into robot)
+ 
+```bash
+ssh ubuntu@192.168.0.XXX
+ros2 launch turtlebot3_bringup robot.launch.py
+```
+
 ```bash
 ros2 launch turtlebot3_navigation2 navigation2.launch.py \
   map:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map.yaml \
@@ -228,7 +243,7 @@ ros2 launch turtlebot3_navigation2 navigation2.launch.py \
   use_rviz:=true
 ```
 
-Set the initial pose in RViz using **2D Pose Estimate**, then teleop one lap before proceeding.
+When RViz opens, click "2D Pose Estimate" and place the arrow at the robot's starting position.
 
 #### 2. Navigation node
 ```bash
@@ -398,7 +413,7 @@ ros2 run turtlebot3_teleop teleop_keyboard
  
 Keep the teleop terminal focused (clicked) while driving. Drive slowly. Avoid driving in a straight line and rotating simultaneously. Cartographer is sensitive to fast or combined linear+rotational motion. 
  
-### Save the map (Cartographer)
+### Save the map
  
 Once the map looks complete in RViz, open a **fourth terminal** and run:
  
@@ -406,6 +421,49 @@ Once the map looks complete in RViz, open a **fourth terminal** and run:
 source ~/.bashrc
 ros2 run nav2_map_server map_saver_cli -f \
   $HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map
+```
+
+---
+
+## Manually Recording the Waypoints
+
+### Terminal 1 — Robot bringup (SSH into robot)
+ 
+```bash
+ssh ubuntu@192.168.0.XXX
+ros2 launch turtlebot3_bringup robot.launch.py
+```
+ 
+Leave this running for the entire mapping session.
+ 
+### Terminal 2 — Nav2 with the new map
+ 
+```bash
+source ~/.bashrc
+ros2 launch turtlebot3_navigation2 navigation2.launch.py \
+  map:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map.yaml \
+  params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml \
+  use_rviz:=true
+```
+ 
+When RViz opens, click "2D Pose Estimate" and place the arrow at the robot's starting position. 
+ 
+### Terminal 3 — Teleop
+ 
+```bash
+source ~/.bashrc
+ros2 run turtlebot3_teleop teleop_keyboard
+```
+ 
+Keep the teleop terminal focused (clicked) while driving. Drive slowly. Avoid driving in a straight line and rotating simultaneously. Cartographer is sensitive to fast or combined linear+rotational motion. 
+ 
+### Record coordinates
+ 
+Drive the robot to each artefact/facility position using teleop, then in a new terminal record the AMCL pose:
+ 
+```bash
+source ~/.bashrc
+ros2 topic echo /amcl_pose --once
 ```
 
 ---

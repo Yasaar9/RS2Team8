@@ -369,7 +369,7 @@ class NavigationNode(Node):
         # RViz "2D Pose Estimate" tool (drag the green arrow) before sending any
         # navigation goals.  Once the arrow is dragged, AMCL's particle cloud
         # converges quickly — one short teleop lap makes it converge even faster.
-        use_sim = self.declare_parameter('use_sim', True).get_parameter_value().bool_value
+        use_sim = self.declare_parameter('use_sim', False).get_parameter_value().bool_value  # RS2 Team 8: default False — real robot. Pass -p use_sim:=true for simulation.
         if use_sim:
             self._set_initial_pose()
 

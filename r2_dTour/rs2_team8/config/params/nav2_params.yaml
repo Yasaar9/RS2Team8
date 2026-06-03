@@ -111,7 +111,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.05
-      movement_time_allowance: 4.0   # RS2 Team 8: reduced from 6s — faster FAILED detection when wedged
+      movement_time_allowance: 4.0   # RS2 Team 8: reduced from 6s
     # RS2 Team 8: stateful=false prevents the yaw-correction oscillation spin that
     # DWB/RPP cannot converge on with TurtleBot3. yaw_goal_tolerance=pi means we
     # don't care about final heading — arrival is declared by our own Euclidean
@@ -126,7 +126,7 @@ controller_server:
     # RotateToGoal critic that caused indefinite oscillation at goal with DWB.
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.10   # RS2 Team 8: reduced from 0.2 for small gallery space
+      desired_linear_vel: 0.08   # RS2 Team 8: reduced from 0.10 — very slow for demo safety
       lookahead_dist: 0.20          # RS2 Team 8: reduced from 0.30 — shorter lookahead = earlier braking
       min_lookahead_dist: 0.10      # RS2 Team 8: reduced from 0.15
       max_lookahead_dist: 0.35      # RS2 Team 8: reduced from 0.45
@@ -166,8 +166,8 @@ local_costmap:
       plugins: ["obstacle_layer", "voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.20   # RS2 Team 8: reduced from 0.75 — old value blocked all paths in 1.75m wide gallery
-        cost_scaling_factor: 5.0  # RS2 Team 8: increased from 3.0 — steeper gradient for tighter clearance
+        inflation_radius: 0.20   # RS2 Team 8: reduced from 0.75
+        cost_scaling_factor: 5.0  # RS2 Team 8: increased from 3.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true

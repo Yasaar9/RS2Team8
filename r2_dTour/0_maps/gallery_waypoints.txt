@@ -1,6 +1,7 @@
 # =============================================================================
 # RS2 Team 8 — Gallery Waypoints (Real Robot)
 # Map: UTS gallery — physical environment
+# Recorded: 2026-06-03 using ros2 topic echo /amcl_pose --once
 # =============================================================================
 #
 # FORMAT:  name   x   y   yaw_degrees   [display_name]   [description]
@@ -24,42 +25,32 @@
 #   fire_exit_*  — emergency exits              (nearest-fire-exit logic)
 #   home         — robot home / charging station
 #
-# MAP FRAME:  origin [-1.1, -1.11, 0]  resolution 0.05 m/px
-#   Navigable area:  X [-0.90, +0.85]   Y [-0.86, +0.59]
-#   All waypoints placed 0.35 m from navigable boundary
-#   (0.30 m OBSTACLE_STOP_DIST + 0.05 m margin) so the robot
-#   never triggers the emergency stop when sitting at a waypoint.
+# MAP FRAME:  origin [-1.24, -1.52, 0]  resolution 0.05 m/px
+#   All coordinates recorded live using AMCL on the real robot.
 #
-# HOW TO REFINE COORDINATES:
-#   1. Launch the full Nav2 stack with AMCL against the real gallery map.
-#   2. Drive the robot to each POI using teleop.
-#   3. Record the AMCL pose:
-#        ros2 topic echo /amcl_pose --once
-#      Copy position.x, position.y.
-#   4. Replace coordinates below.
-#   5. Restart the navigation_node — no rebuild needed.
+# OBSTACLE DETECTION NOTE:
+#   OBSTACLE_STOP_DIST = 0.30m (navigation.py)
+#   All waypoints verified >= 0.30m from nearest wall.
+#   artifact_2 (Pokemon Card) is the tightest at ~0.30m wall distance —
+#   if obstacle detection triggers there, move the robot 0.10m away from
+#   the wall and re-record that waypoint only.
 #
 # Lines starting with # are comments. Blank lines are ignored.
 # =============================================================================
 
 # ── Home ──────────────────────────────────────────────────────────────────────
-# Centre of the navigable space — safe starting position
-home           -0.025   -0.135    0.0
+home             0.021   -0.017     -0.5
 
 # ── Artefacts ─────────────────────────────────────────────────────────────────
-# Placed at the 4 corners of the safe waypoint zone, facing inward toward centre.
-# Safe zone corners: X [-0.55, +0.50]  Y [-0.51, +0.24]
-# Yaw angles computed so robot faces (-0.03, -0.14) — centre of safe zone.
-artifact_1     -0.550    0.240   -35.5   Wooden_Toy_Truck   This_wooden_toy_truck_represents_playful_object_design._It_combines_wood,_painted_panels,_wheels,_and_a_small_cargo_tray_to_show_how_everyday_toys_can_be_both_functional_and_decorative.
-artifact_2      0.500    0.240  -144.5   Pokemon_Card       This_Japanese_Pokemon_card_features_Dedenne._It_represents_modern_collectible_culture,_combining_illustration,_game_mechanics,_character_branding,_and_printed_design.
-artifact_3      0.500   -0.510   144.5   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
-artifact_4     -0.550   -0.510    35.5   Water_Bottle       This_pink_LARQ_water_bottle_represents_contemporary_product_design._Its_simple_cylindrical_form,_reusable_function,_and_minimal_branding_connect_to_sustainability_and_everyday_lifestyle_objects.
+# display_name and description use underscores in place of spaces
+artifact_1       1.355    1.531     -9.5   Wooden_Toy_Truck   This_wooden_toy_truck_represents_playful_object_design._It_combines_wood,_painted_panels,_wheels,_and_a_small_cargo_tray_to_show_how_everyday_toys_can_be_both_functional_and_decorative.
+artifact_2       1.430   -0.210    -13.3   Pokemon_Card       This_Japanese_Pokemon_card_features_Dedenne._It_represents_modern_collectible_culture,_combining_illustration,_game_mechanics,_character_branding,_and_printed_design.
+artifact_3       1.010    1.398   -168.9   Plush_Mouse        This_grey_plush_mouse_uses_soft_fabric,_stitched_details,_and_simple_facial_features_to_create_a_friendly_character._It_represents_comfort_objects_and_textile-based_toy_design.
+artifact_4       1.743    2.500     39.5   Water_Bottle       This_pink_LARQ_water_bottle_represents_contemporary_product_design._Its_simple_cylindrical_form,_reusable_function,_and_minimal_branding_connect_to_sustainability_and_everyday_lifestyle_objects.
 
 # ── Toilets ───────────────────────────────────────────────────────────────────
-# Middle of upper edge, robot faces South (-90°) into the room
-toilet_1       -0.025    0.240   -90.0
+toilet_1         0.953    2.541   -177.1
 
 # ── Fire Exits ────────────────────────────────────────────────────────────────
-# Middle of left edge (faces East = 0°) and right edge (faces West = 180°)
-fire_exit_1    -0.550   -0.135     0.0
-fire_exit_2     0.500   -0.135   180.0
+fire_exit_1      0.842   -0.239    -84.8
+fire_exit_2      1.290    2.664     87.6
