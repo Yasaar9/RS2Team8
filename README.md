@@ -125,6 +125,24 @@ colcon build --symlink-install --cmake-args -Wno-dev
 source ~/.bashrc
 ```
 
+### 7. VS Code installation note (RViz conflict)
+
+Do **not** install VS Code via snap — the `core20` snap package injects libraries that conflict with RViz and cause a `symbol lookup error: libpthread` crash. Install VS Code via apt instead:
+
+```bash
+# Remove snap version if already installed
+sudo snap remove code
+
+# Install via apt
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+sudo install -o root -g root -m 644 packages.microsoft.gpg /etc/apt/trusted.gpg.d/
+sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/vscode stable main" > /etc/apt/sources.list.d/vscode.list'
+sudo apt update
+sudo apt install code
+```
+
+Open a fresh terminal after this and RViz will work normally.
+
 ---
 
 ## Running the System
@@ -273,40 +291,53 @@ ros2 topic echo /navigation/status
 
 ### Network setup
 
-Connect to the TurtleBot3 Wi-Fi network, then set your domain ID to match the robot:
+Connect to the TurtleBot3 Wi-Fi network. Ensure your laptop's `~/.bashrc` has the correct domain ID to match the robot:
 
 ```bash
-# One-time permanent setup
-echo 'export ROS_DOMAIN_ID=71' >> ~/.bashrc
-echo 'export TURTLEBOT3_MODEL=waffle_pi' >> ~/.bashrc
-source ~/.bashrc
+export ROS_DOMAIN_ID=71
+export TURTLEBOT3_MODEL=waffle_pi
 ```
+
+> **Note:** If you have `ROS_DOMAIN_ID=67` or any other value in your `.bashrc`, change it to `71` — a mismatch means your laptop and robot cannot see each other's topics. Verify with `ros2 topic list` after connecting; you should see `/scan`, `/odom`, `/map` etc.
 
 ### SSH into the robot
 
 ```bash
-ssh ubuntu@192.168.0.2XX
+ssh ubuntu@192.168.0.XXX
 # Password: turtlebot
 ```
 
-Add the following to the robot's `~/.bashrc` if not already present:
+The robot's `~/.bashrc` should already contain (set domain ID to 71):
 
 ```bash
+source /opt/ros/humble/setup.bash
+source /home/ubuntu/turtlebot3_ws/install/setup.bash
+export LDS_MODEL=LDS-01
 export TURTLEBOT3_MODEL=waffle_pi
+export OPENCR_PORT=/dev/ttyACM0
+export OPENCR_MODEL=waffle
 export ROS_DOMAIN_ID=71
 ```
+To check:
 
+```bash
+nano ~/.bashrc
+```
 ### Start the robot bringup (on the robot via SSH)
 
 ```bash
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
 
-### Teleop (on the robot via SSH)
+Leave this terminal running. All following commands are on your **laptop**.
+
+### Teleop
 
 ```bash
 ros2 run turtlebot3_teleop teleop_keyboard
 ```
+
+> **Note:** The teleop terminal must be the **actively focused window** for WASD keys to register. Clicking another window (e.g. RViz) will cause keys to stop working. Spacebar sends a stop command to the robot directly and will still work regardless — if spacebar works but WASD does not, click the teleop terminal to refocus it.
 
 ### Camera
 
@@ -326,23 +357,56 @@ On your local machine:
 ros2 run image_tools showimage --ros-args -r image:=/camera/image_raw
 ```
 
+---
+
 ## Building the Gallery Map
 
-To record a new map of the real gallery using SLAM Toolbox:
-
+ 
+> **Note:** Cartographer is the official ROBOTIS SLAM method for TurtleBot3.
+ 
+Open **four terminals** on your laptop. Source `~/.bashrc` in each before running any command.
+ 
+### Terminal 1 — Robot bringup (SSH into robot)
+ 
 ```bash
-# On the robot
-ros2 launch slam_toolbox online_async_launch.py use_sim_time:=false
-
-# Drive the robot around to cover the space
+ssh ubuntu@192.168.0.XXX
+ros2 launch turtlebot3_bringup robot.launch.py
+```
+ 
+Leave this running for the entire mapping session.
+ 
+### Terminal 2 — Cartographer
+ 
+```bash
+source ~/.bashrc
+ros2 launch turtlebot3_cartographer cartographer.launch.py use_sim_time:=false
+```
+ 
+If RViz does not show the map, check the following in the RViz window:
+ 
+- Set **Fixed Frame** (top left under Global Options) to `map`
+- Click **Add** → **By Topic** → add `/map` if not already present
+- Click **Add** → **By Topic** → add `/scan` if not already present
+> **Verify the robot is visible** by checking `ros2 topic list` in a separate terminal — you should see `/scan`, `/odom`, `/map` etc. If the list is empty or missing these topics, your `ROS_DOMAIN_ID` does not match the robot (must be `71`).
+ 
+### Terminal 3 — Teleop
+ 
+```bash
+source ~/.bashrc
 ros2 run turtlebot3_teleop teleop_keyboard
-
-# Save the map
+```
+ 
+Keep the teleop terminal focused (clicked) while driving. Drive slowly. Avoid driving in a straight line and rotating simultaneously. Cartographer is sensitive to fast or combined linear+rotational motion. 
+ 
+### Save the map (Cartographer)
+ 
+Once the map looks complete in RViz, open a **fourth terminal** and run:
+ 
+```bash
+source ~/.bashrc
 ros2 run nav2_map_server map_saver_cli -f \
   $HOME/git/RS2Team8/r2_dTour/0_maps/gallery_map
 ```
-
-The resulting `gallery_map.yaml` and `gallery_map.pgm` should be committed to the repository and referenced in the launch command.
 
 ---
 
@@ -364,3 +428,4 @@ ros2 topic echo /navigation/status
 # Verify AMCL is localising
 ros2 topic echo /amcl_pose --once
 ```
+---
