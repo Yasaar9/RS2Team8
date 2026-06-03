@@ -49,6 +49,7 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool, String
 
@@ -229,7 +230,7 @@ NAV2_RETRIES = 2
 # ===========================================================================
 DEBUG_POSE         = True
 DEBUG_OBSTACLE     = True
-DEBUG_INTERVAL_SEC = 3.0
+DEBUG_INTERVAL_SEC = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -406,11 +407,15 @@ class NavigationNode(Node):
         self._amcl_y: float = 0.0
         self._amcl_lock = threading.Lock()
 
-        # ── Yaw tracking (always from odom) ──────────────────────────────────
-        # Odom yaw is used for rotate-first and unstuck direction logic.
-        # It's always available and short-duration in-place spins produce
-        # negligible drift.
-        self._robot_yaw: float = 0.0
+        # ── Yaw tracking ─────────────────────────────────────────────────────
+        # _robot_yaw is always updated from odometry — fast and smooth, but in
+        # the ODOM frame, which can differ from the MAP frame by a fixed yaw
+        # offset.  _yaw_map_offset = amcl_yaw - odom_yaw is computed each time
+        # AMCL publishes, so _get_map_yaw() = odom_yaw + offset gives
+        # map-frame yaw at odom rate.  All rotation and corridor code uses
+        # _get_map_yaw() so it compares correctly against map-frame bearings.
+        self._robot_yaw: float      = 0.0
+        self._yaw_map_offset: float = 0.0   # map_yaw = odom_yaw + this
         self._yaw_lock = threading.Lock()
 
         self.create_subscription(
@@ -429,7 +434,16 @@ class NavigationNode(Node):
         self._latest_scan: LaserScan | None = None
         self._latest_scan_lock = threading.Lock()
 
-        self.create_subscription(LaserScan, "/scan", self._scan_callback, 10)
+        # TurtleBot3 publishes /scan with BEST_EFFORT reliability.
+        # Using the default RELIABLE QoS causes a QoS incompatibility and
+        # zero scan messages are ever received.  BEST_EFFORT is compatible
+        # with both BEST_EFFORT and RELIABLE publishers.
+        _scan_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self.create_subscription(LaserScan, "/scan", self._scan_callback, _scan_qos)
 
         # ── Camera — obstacle photo capture ──────────────────────────────────
         # Stores the most recent raw image message for saving on obstacle event.
@@ -457,14 +471,30 @@ class NavigationNode(Node):
     # ── Pose / yaw tracking ──────────────────────────────────────────────────
 
     def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
+        x   = msg.pose.pose.position.x
+        y   = msg.pose.pose.position.y
+        qz  = msg.pose.pose.orientation.z
+        qw  = msg.pose.pose.orientation.w
+        amcl_yaw = quaternion_to_yaw(qz, qw)
+
         with self._amcl_lock:
             self._amcl_x = x
             self._amcl_y = y
         with self._pose_lock:
             self._robot_x = x
             self._robot_y = y
+
+        # Keep the map-to-odom yaw offset current.
+        # goal bearings are computed in the map frame via atan2 on AMCL
+        # positions. _rotate_to_bearing compares that bearing against the
+        # robot's current yaw. If odom_yaw is used directly and map and odom
+        # frames differ in orientation (always true on the real robot after
+        # a 2D Pose Estimate), the error is wrong and the robot overshoots
+        # massively.  Storing offset = amcl_yaw - odom_yaw lets
+        # _get_map_yaw() return a map-frame yaw at odom speed.
+        with self._yaw_lock:
+            self._yaw_map_offset = angle_diff(amcl_yaw, self._robot_yaw)
+
         self._amcl_ever_received = True
         self._last_amcl_time = time.time()
 
@@ -494,8 +524,16 @@ class NavigationNode(Node):
             return self._robot_x, self._robot_y
 
     def _get_yaw(self) -> float:
+        """Raw odom-frame yaw. Use _get_map_yaw() for rotation and corridor logic."""
         with self._yaw_lock:
             return self._robot_yaw
+
+    def _get_map_yaw(self) -> float:
+        """Map-frame yaw at odom rate: combines high-frequency odom yaw with
+        the AMCL-derived map-to-odom offset so rotation targets (which are
+        always map-frame bearings) are compared in the same frame."""
+        with self._yaw_lock:
+            return self._robot_yaw + self._yaw_map_offset
 
     def _distance_to_goal(self, goal_x: float, goal_y: float) -> float:
         rx, ry = self._get_pose()
@@ -510,7 +548,8 @@ class NavigationNode(Node):
             with self._amcl_lock:
                 ax, ay = self._amcl_x, self._amcl_y
             rx, ry = self._get_pose()
-            yaw_deg = math.degrees(self._get_yaw())
+            yaw_odom_deg = math.degrees(self._get_yaw())
+            yaw_map_deg  = math.degrees(self._get_map_yaw())
             amcl_age = time.time() - self._last_amcl_time if self._amcl_ever_received else float("inf")
             source   = "amcl" if self._amcl_ever_received else "odom(pre-amcl)"
             odom_amcl_err = math.hypot(ox - ax, oy - ay) if self._amcl_ever_received else float("nan")
@@ -522,7 +561,7 @@ class NavigationNode(Node):
                 f"\n  odom   : ({ox:+.3f}, {oy:+.3f})  (odom frame — drifts)"
                 f"\n  amcl   : ({ax:+.3f}, {ay:+.3f})  (map frame  — used for nav)"
                 f"\n  active : {source} -> ({rx:+.3f}, {ry:+.3f})"
-                f"\n  yaw    : {yaw_deg:+.1f} deg  (from odom)"
+                f"\n  yaw odom : {yaw_odom_deg:+.1f} deg  |  yaw map : {yaw_map_deg:+.1f} deg"
                 f"\n  amcl age : {amcl_age:.1f} s"
                 f"\n  odom/amcl error : {err_str}"
             )
@@ -552,7 +591,7 @@ class NavigationNode(Node):
         def _worker():
             # Snapshot pose now (called from the scan callback thread)
             rx, ry = self._get_pose()
-            yaw_deg = math.degrees(self._get_yaw())
+            yaw_deg = math.degrees(self._get_map_yaw())
             source  = "amcl" if self._amcl_ever_received else "odom"
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
@@ -871,6 +910,24 @@ class NavigationNode(Node):
             if self._nav_thread.is_alive():
                 self.get_logger().warn("[NAV] Previous thread did not exit in time — proceeding anyway.")
 
+        # Safety guard: reject goals before AMCL has published a single pose.
+        # Before the 2D Pose Estimate is set in RViz, _robot_x/_robot_y is
+        # odom-frame (starts at 0, 0) while goal coordinates are map-frame.
+        # On the gallery map, odom (0, 0) is only 0.027 m from the home
+        # waypoint — inside XY_ARRIVAL_THRESHOLD — so the Euclidean arrival
+        # check would fire immediately for any nearby waypoint.
+        # In simulation this guard never triggers: setInitialPose() is called
+        # at startup and AMCL publishes before waitUntilNav2Active() returns.
+        if not self._amcl_ever_received:
+            self.get_logger().warn(
+                f"[NAV] Rejected goal '{label}': AMCL has not published a pose yet. "
+                f"On the real robot, click '2D Pose Estimate' in RViz and place the "
+                f"green arrow at the robot's position before sending any goals."
+            )
+            self._publish_status("FAILED")
+            self._publish_reached(False)
+            return
+
         pose.header.stamp = self.get_clock().now().to_msg()
         self._navigating  = True
         self._rotating    = False
@@ -916,7 +973,7 @@ class NavigationNode(Node):
             return None
 
         min_beams   = max(1, int(CORRIDOR_MIN_ARC_DEG / 360.0 * num))
-        current_yaw = self._get_yaw()
+        current_yaw = self._get_map_yaw()
 
         # Boolean mask: True where beam clears the range threshold
         clear = [
@@ -999,7 +1056,7 @@ class NavigationNode(Node):
                 )
                 break
 
-            current_yaw = self._get_yaw()
+            current_yaw = self._get_map_yaw()
             error_rad   = angle_diff(bearing_rad, current_yaw)
             if abs(error_rad) <= math.radians(ROTATE_TOLERANCE_DEG):
                 self.get_logger().info(
@@ -1058,7 +1115,7 @@ class NavigationNode(Node):
         self.get_logger().warn(f"[UNSTUCK] Starting unstuck manoeuvre for '{label}'.")
         self._publish_status("REROUTING")
 
-        current_yaw = self._get_yaw()
+        current_yaw = self._get_map_yaw()
         bearing     = self._find_best_clear_bearing(current_yaw)
 
         if bearing is None:
@@ -1227,7 +1284,11 @@ class NavigationNode(Node):
                 last_log_time = now
 
             # ── Arrival (primary check) ───────────────────────────────────────
-            if dist <= XY_ARRIVAL_THRESHOLD:
+            # Guard: only use the Euclidean check when AMCL has published at
+            # least once. Without AMCL, _robot_x/_robot_y is odom-frame while
+            # goals are map-frame — cross-frame arithmetic gives a wrong
+            # distance and can fire immediately for waypoints near the origin.
+            if self._amcl_ever_received and dist <= XY_ARRIVAL_THRESHOLD:
                 self.get_logger().info(
                     f"[NAV] '{label}': arrived ({dist:.3f} m) — REACHED."
                 )
@@ -1255,23 +1316,38 @@ class NavigationNode(Node):
             result = self.navigator.getResult()
 
             if result == TaskResult.SUCCEEDED:
-                self.get_logger().info(
-                    f"[NAV] '{label}': Nav2 SUCCEEDED at dist={dist:.3f} m — accepting."
-                )
-                stop_deadline = time.time() + 2.0
-                while time.time() < stop_deadline:
+                # Guard: verify AMCL agrees the robot is actually near the goal
+                # before accepting Nav2's SUCCEEDED result.
+                # On the real robot, Nav2's goal checker can fire against an
+                # unconverged AMCL position and return SUCCEEDED while the robot
+                # has not moved — AMCL would then report a large distance.
+                # Accepting SUCCEEDED unconditionally was the original bug.
+                if self._amcl_ever_received and dist > XY_ARRIVAL_THRESHOLD:
+                    self.get_logger().warn(
+                        f"[NAV] '{label}': Nav2 SUCCEEDED but AMCL dist={dist:.3f}m > "
+                        f"{XY_ARRIVAL_THRESHOLD}m — spurious success (AMCL may not be "
+                        f"converged). Treating as failed and retrying."
+                    )
+                    # Fall through to the retry/unstuck logic below.
+                    result = TaskResult.FAILED
+                else:
+                    self.get_logger().info(
+                        f"[NAV] '{label}': Nav2 SUCCEEDED at dist={dist:.3f} m — REACHED."
+                    )
+                    stop_deadline = time.time() + 2.0
+                    while time.time() < stop_deadline:
+                        self._stop_robot()
+                        with self._odom_lock:
+                            lin = abs(getattr(self, '_odom_vx', 0.0))
+                            ang = abs(getattr(self, '_odom_wz', 0.0))
+                        if lin < 0.01 and ang < 0.05:
+                            break
+                        time.sleep(0.05)
                     self._stop_robot()
-                    with self._odom_lock:
-                        lin = abs(getattr(self, '_odom_vx', 0.0))
-                        ang = abs(getattr(self, '_odom_wz', 0.0))
-                    if lin < 0.01 and ang < 0.05:
-                        break
-                    time.sleep(0.05)
-                self._stop_robot()
-                self._navigating = False
-                self._publish_status("REACHED")
-                self._publish_reached(True)
-                return
+                    self._navigating = False
+                    self._publish_status("REACHED")
+                    self._publish_reached(True)
+                    return
 
             # Nav2 failed
             self.get_logger().warn(

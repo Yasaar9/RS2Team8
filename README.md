@@ -80,7 +80,7 @@ sudo apt install python3-tk
 
 # AI responses (UI falls back if absent)
 pip3 install ollama
-ollama pull llama3.2:3b
+sudo snap install ollama
 ```
 
 TurtleBot3 e-Manual: https://emanual.robotis.com/docs/en/platform/turtlebot3/quick-start/
@@ -149,7 +149,7 @@ Open a fresh terminal after this and RViz will work normally.
 
 > `map`, `waypoints_file`, and `params_file` are **required**. The launch will fail immediately with a clear error if any are missing or point to a non-existent file.
 
-### Simulation (single command)
+### Simulation
 
 ```bash
 ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=true \
@@ -160,14 +160,27 @@ ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=true \
 
 Gazebo opens → Nav2 activates after 4 s → navigation_node and UI start after 10–11 s. Initial pose is set automatically at (0, 0).
 
-### Real robot (single command)
+### Real robot
 
 First Robot bringup (SSH into robot)
  
 ```bash
 ssh ubuntu@192.168.0.XXX
+```
+
+Set time on the robot (replace with your laptop's IP)
+
+```bash
+sudo date -s "$(ssh youruser@192.168.0.YYY 'date -u')" # sudo date -s "$(ssh jsunne@192.168.0.239 'date -u')"
+```
+
+launch bringup
+
+```bash
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
+
+Run all nodes
 
 ```bash
 ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
@@ -180,11 +193,7 @@ Nav2 and RViz open after 2 s → navigation_node and UI start after 15–16 s.
 
 **Before pressing any UI buttons:**
 1. In RViz click **2D Pose Estimate** and drag the green arrow to the robot's approximate position and heading on the map
-2. Teleop the robot one short lap to help AMCL converge:
-   ```bash
-   ros2 run turtlebot3_teleop teleop_keyboard
-   ```
-3. Once the particle cloud tightens in RViz, the system is ready
+2. Once the particle cloud tightens in RViz, the system is ready
 
 ---
 
@@ -356,7 +365,7 @@ ros2 run turtlebot3_teleop teleop_keyboard
 
 ### Camera
 
-Install the dependency on **both the robot and your local machine**:
+Install the dependency locally:
 
 ```bash
 sudo apt install ros-humble-image-*
@@ -364,13 +373,14 @@ sudo apt install ros-humble-image-*
 
 On the robot (via SSH):
 ```bash
-ros2 run camera_ros camera_node --ros-args -p format:=MJPEG
+ros2 run camera_ros camera_node --ros-args -p format:=RGB888
 ```
 
 On your local machine:
 ```bash
-ros2 run image_tools showimage --ros-args -r image:=/camera/image_raw
+ros2 run rqt_image_view rqt_image_view
 ```
+Then choose topic: /camera/image_raw/compressed
 
 ---
 
