@@ -161,8 +161,8 @@ def generate_launch_description():
         condition=UnlessCondition(use_sim),
     )
 
-    delayed_nav2_sim  = TimerAction(period=4.0, actions=[nav2_launch_sim])
-    delayed_nav2_real = TimerAction(period=2.0, actions=[nav2_launch_real])
+    delayed_nav2_sim  = TimerAction(period=4.0,  actions=[nav2_launch_sim],       condition=IfCondition(use_sim))
+    delayed_nav2_real = TimerAction(period=2.0,  actions=[nav2_launch_real],      condition=UnlessCondition(use_sim))
 
     # -- 3. navigation_node ---------------------------------------------------
     # Sim:        delayed 10 s — Nav2 fully activates then pose set at (0,0)
@@ -186,8 +186,8 @@ def generate_launch_description():
         condition=UnlessCondition(use_sim),
     )
 
-    delayed_navigation_node_sim  = TimerAction(period=10.0, actions=[navigation_node_sim])
-    delayed_navigation_node_real = TimerAction(period=15.0, actions=[navigation_node_real])
+    delayed_navigation_node_sim  = TimerAction(period=10.0, actions=[navigation_node_sim],  condition=IfCondition(use_sim))
+    delayed_navigation_node_real = TimerAction(period=15.0, actions=[navigation_node_real], condition=UnlessCondition(use_sim))
 
     # -- 4. ui_node -----------------------------------------------------------
     # Two separate Node objects required — ros2 launch raises
@@ -216,8 +216,8 @@ def generate_launch_description():
         condition=UnlessCondition(use_sim),
     )
 
-    delayed_ui_node_sim  = TimerAction(period=11.0, actions=[ui_node_sim])
-    delayed_ui_node_real = TimerAction(period=16.0, actions=[ui_node_real])
+    delayed_ui_node_sim  = TimerAction(period=11.0, actions=[ui_node_sim],  condition=IfCondition(use_sim))
+    delayed_ui_node_real = TimerAction(period=16.0, actions=[ui_node_real], condition=UnlessCondition(use_sim))
 
 
     return LaunchDescription([

@@ -103,7 +103,7 @@ INITIAL_POSE_YAW = 0.0   # degrees
 #   on Nav2's isTaskComplete() because distance_remaining reports arc-length,
 #   not Euclidean distance, and never converges on TurtleBot3 + RPP.
 # ===========================================================================
-XY_ARRIVAL_THRESHOLD = 0.15   # metres — matches Nav2 xy_goal_tolerance; gives buffer for AMCL update lag
+XY_ARRIVAL_THRESHOLD = 0.20   # metres — generous buffer for AMCL update lag on real robot
 
 
 # ===========================================================================
@@ -1052,6 +1052,17 @@ class NavigationNode(Node):
         self._publish_status("ROTATING")
         start = time.time()
         cmd   = Twist()
+
+        # Flush any residual velocity left in Nav2's velocity pipeline
+        # (velocity_smoother → collision_monitor) before starting the spin.
+        # Without this, the smoother's deceleration ramp can publish non-zero
+        # linear velocity onto /cmd_vel for ~200ms after the previous navigation
+        # is cancelled, causing the robot to creep forward during rotation.
+        flush = Twist()   # all zeros
+        flush_end = time.time() + 0.25
+        while time.time() < flush_end:
+            self.cmd_vel_pub.publish(flush)
+            time.sleep(0.05)
 
         while True:
             if not self._navigating:
