@@ -201,6 +201,7 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         additional_env={"DISPLAY": display},
+        parameters=[{"waypoints_file": waypoints_file}],
         condition=IfCondition(use_sim),
     )
 
@@ -211,6 +212,7 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         additional_env={"DISPLAY": display},
+        parameters=[{"waypoints_file": waypoints_file}],
         condition=UnlessCondition(use_sim),
     )
 

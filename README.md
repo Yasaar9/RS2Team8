@@ -70,6 +70,9 @@ sudo apt install ros-humble-cartographer
 sudo apt install ros-humble-cartographer-ros
 sudo apt install ros-humble-slam-toolbox
 
+# Camera
+sudo apt install ros-humble-image-*
+
 # Audio (text-to-speech)
 sudo apt install python3-pip
 sudo apt install mpg123
@@ -179,7 +182,10 @@ launch bringup
 ```bash
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
-
+On new terminal on the robot (via SSH):
+```bash
+ros2 run camera_ros camera_node --ros-args -p format:=RGB888
+```
 Run all nodes
 
 ```bash
@@ -188,6 +194,7 @@ ros2 launch rs2_team8 rs2_tour.launch.py use_sim:=false \
   waypoints_file:=$HOME/git/RS2Team8/r2_dTour/0_maps/gallery_waypoints.txt \
   params_file:=$HOME/git/RS2Team8/r2_dTour/rs2_team8/config/params/nav2_params.yaml
 ```
+
 
 Nav2 and RViz open after 2 s → navigation_node and UI start after 15–16 s.
 

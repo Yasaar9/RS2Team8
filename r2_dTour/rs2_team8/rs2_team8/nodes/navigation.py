@@ -103,7 +103,7 @@ INITIAL_POSE_YAW = 0.0   # degrees
 #   on Nav2's isTaskComplete() because distance_remaining reports arc-length,
 #   not Euclidean distance, and never converges on TurtleBot3 + RPP.
 # ===========================================================================
-XY_ARRIVAL_THRESHOLD = 0.10   # metres — RS2 Team 8: reduced from 0.15 for small gallery space
+XY_ARRIVAL_THRESHOLD = 0.15   # metres — matches Nav2 xy_goal_tolerance; gives buffer for AMCL update lag
 
 
 # ===========================================================================
@@ -138,7 +138,6 @@ XY_ARRIVAL_THRESHOLD = 0.10   # metres — RS2 Team 8: reduced from 0.15 for sma
 # ===========================================================================
 CORRIDOR_MIN_RANGE_M        = 0.60   # metres — RS2 Team 8: reduced from 1.2 for small gallery space
 CORRIDOR_MIN_ARC_DEG        = 30     # degrees — minimum corridor width (see maths above)
-CORRIDOR_GOAL_TOLERANCE_DEG = 5.0   # degrees — snap to exact goal bearing if this close
 
 ROTATE_TOLERANCE_DEG = 10.0   # degrees — stop rotating when within this
 ROTATE_SPEED_RAD     = 0.4    # rad/s  — RS2 Team 8: reduced from 0.6 for small gallery space
@@ -942,24 +941,20 @@ class NavigationNode(Node):
 
     def _find_best_clear_bearing(self, goal_bearing_rad: float) -> float | None:
         """
-        Unified method for both pre-navigation heading and unstuck direction.
+        Unified method for pre-navigation heading and unstuck direction.
 
-        Scans the latest 360° LiDAR reading for valid passable corridors:
-          - A corridor is a contiguous arc of beams all >= CORRIDOR_MIN_RANGE_M.
-          - The arc must span at least CORRIDOR_MIN_ARC_DEG (30°, derived from
-            robot body width at 1.2 m range — see constant block for maths).
-          - Each valid corridor is scored by its angular distance from
-            goal_bearing_rad (smaller = better).
-          - The centre bearing of the best-scoring corridor is returned.
-          - If that centre is within CORRIDOR_GOAL_TOLERANCE_DEG of the goal
-            bearing, the exact goal bearing is returned so the robot faces
-            the goal precisely when the path is clear.
+        Step 1 — direct line-of-sight check:
+          A robot-width window of beams (CORRIDOR_MIN_ARC_DEG wide) centred
+          on the goal bearing is tested.  If every beam in that window clears
+          CORRIDOR_MIN_RANGE_M, the exact goal bearing is returned — the robot
+          faces the waypoint directly with no angular offset.
 
-        For unstuck use: pass the current robot yaw as goal_bearing_rad so
-        the corridor closest to the current heading is preferred, minimising
-        unnecessary spinning.
+        Step 2 — corridor search (only when goal direction is blocked):
+          The full 360° scan is searched for contiguous clear arcs that are
+          >= CORRIDOR_MIN_ARC_DEG wide.  The arc whose centre is closest in
+          angle to the goal bearing is returned.
 
-        Returns None if no corridor meets the minimum width requirement.
+        Returns None if no arc >= CORRIDOR_MIN_ARC_DEG wide is found at all.
         """
         with self._latest_scan_lock:
             scan = self._latest_scan
@@ -975,15 +970,37 @@ class NavigationNode(Node):
         min_beams   = max(1, int(CORRIDOR_MIN_ARC_DEG / 360.0 * num))
         current_yaw = self._get_map_yaw()
 
-        # Boolean mask: True where beam clears the range threshold
+        # ── Step 1: direct line-of-sight check ───────────────────────────────
+        # Convert the goal bearing to a robot-relative beam index, then verify
+        # a ±half_window arc around it.  half_window = min_beams // 2 means
+        # the total checked arc equals CORRIDOR_MIN_ARC_DEG — the same
+        # clearance standard used by the corridor search below, ensuring the
+        # robot body can physically pass through in that direction.
+        half_window = min_beams // 2
+        goal_rel = angle_diff(goal_bearing_rad, current_yaw)
+        goal_idx = round(goal_rel / (2.0 * math.pi) * num) % num
+        los_clear = all(
+            scan.range_min < scan.ranges[(goal_idx + di) % num] < scan.range_max
+            and scan.ranges[(goal_idx + di) % num] >= CORRIDOR_MIN_RANGE_M
+            for di in range(-half_window, half_window + 1)
+        )
+        if los_clear:
+            self.get_logger().info(
+                f"[CORRIDOR] Direct LOS to {math.degrees(goal_bearing_rad):.1f}° is clear "
+                f"— facing goal exactly."
+            )
+            return goal_bearing_rad
+
+        # ── Step 2: corridor search ───────────────────────────────────────────
+        # Goal direction has an obstacle.  Find the clear corridor whose centre
+        # is closest in angle to the goal bearing.
         clear = [
             scan.range_min < r < scan.range_max and r >= CORRIDOR_MIN_RANGE_M
             for r in scan.ranges
         ]
 
-        # Scan for contiguous clear runs (wrap-around handled by doubling the list)
-        doubled     = clear + clear
-        best_score  = float("inf")
+        doubled      = clear + clear
+        best_score   = float("inf")
         best_bearing = None
 
         i = 0
@@ -997,17 +1014,16 @@ class NavigationNode(Node):
                 j += 1
             run_len = j - run_start
             if run_len >= min_beams:
-                centre_idx      = (run_start + run_len // 2) % num
+                centre_idx       = (run_start + run_len // 2) % num
                 beam_angle_robot = 2.0 * math.pi * centre_idx / num
                 corridor_bearing = current_yaw + beam_angle_robot
-                # Normalise to [-pi, pi]
                 while corridor_bearing >  math.pi: corridor_bearing -= 2 * math.pi
                 while corridor_bearing < -math.pi: corridor_bearing += 2 * math.pi
                 score = abs(angle_diff(corridor_bearing, goal_bearing_rad))
                 self.get_logger().info(
                     f"[CORRIDOR] corridor: centre={math.degrees(corridor_bearing):.1f}°  "
                     f"width={run_len}/{num} beams ({run_len/num*360:.0f}°)  "
-                    f"dist_to_goal={math.degrees(score):.1f}°"
+                    f"dist_to_goal_bearing={math.degrees(score):.1f}°"
                 )
                 if score < best_score:
                     best_score    = score
@@ -1020,15 +1036,8 @@ class NavigationNode(Node):
             )
             return None
 
-        if math.degrees(best_score) <= CORRIDOR_GOAL_TOLERANCE_DEG:
-            self.get_logger().info(
-                f"[CORRIDOR] Best corridor within {CORRIDOR_GOAL_TOLERANCE_DEG}° of goal "
-                f"— snapping to exact goal bearing."
-            )
-            return goal_bearing_rad
-
         self.get_logger().info(
-            f"[CORRIDOR] Best bearing: {math.degrees(best_bearing):.1f}°  "
+            f"[CORRIDOR] Best open bearing: {math.degrees(best_bearing):.1f}°  "
             f"({math.degrees(best_score):.1f}° from goal {math.degrees(goal_bearing_rad):.1f}°)"
         )
         return best_bearing
@@ -1078,20 +1087,36 @@ class NavigationNode(Node):
         self, goal_x: float, goal_y: float, label: str
     ) -> bool:
         """
-        Pre-navigation: find the best passable corridor closest to the goal
-        bearing and rotate to face it. If the direct path is clear the robot
-        faces the goal exactly. If blocked, it faces the nearest open corridor.
-        Falls back to facing the goal directly if no corridor is found.
+        Pre-navigation: find the best passable heading toward the goal and
+        rotate to face it.
+
+        If the robot is already within CORRIDOR_MIN_RANGE_M of the goal,
+        the corridor check is skipped — beams in that direction would measure
+        the floor at close range and the robot is effectively already there.
+
+        Otherwise, _find_best_clear_bearing() is called.  That method first
+        checks whether the goal direction itself is clear (direct LOS).  If
+        it is, the robot faces the goal exactly.  If not, it faces the nearest
+        open corridor.  Falls back to the exact goal bearing when no corridor
+        is found (scan unavailable or fully blocked).
         """
         rx, ry       = self._get_pose()
+        dist         = math.hypot(goal_x - rx, goal_y - ry)
         goal_bearing = math.atan2(goal_y - ry, goal_x - rx)
-        bearing      = self._find_best_clear_bearing(goal_bearing)
 
-        if bearing is None:
-            self.get_logger().warn(
-                f"[ROTATE] '{label}': no clear corridor found — facing goal directly."
-            )
+        if dist < CORRIDOR_MIN_RANGE_M:
             bearing = goal_bearing
+            self.get_logger().info(
+                f"[ROTATE] '{label}': within {CORRIDOR_MIN_RANGE_M:.2f}m of goal "
+                f"— skipping corridor check, facing goal directly."
+            )
+        else:
+            bearing = self._find_best_clear_bearing(goal_bearing)
+            if bearing is None:
+                self.get_logger().warn(
+                    f"[ROTATE] '{label}': no clear corridor found — facing goal directly."
+                )
+                bearing = goal_bearing
 
         self.get_logger().info(
             f"[ROTATE] '{label}': rotating to {math.degrees(bearing):.1f}° "
